@@ -30,7 +30,7 @@ PROBLEM_FIELDS = ("problem", "Question", "question", "prompt")
 SOLUTION_FIELDS = ("solution", "COT_Reason", "reasoning")
 DIAGNOSTIC_FIELDS = (
     "prefix_valid_until",
-    "first_error_span",
+    "first_error_sentence",
     "error_type",
     "valid_prefix_summary",
     "student_plan",
@@ -72,7 +72,7 @@ Judging procedure:
 1. Read the problem and reference solution.
 2. Inspect the student's trace step by step.
 3. Determine the longest mathematically valid student prefix.
-4. Locate the first invalid or unsafe step.
+4. Locate the first invalid or unsafe sentence.
 5. Describe the student's plan before that point.
 6. Provide the smallest repair that allows the student to continue from their own prefix.
 7. Provide the next local subgoal after the repair.
@@ -81,7 +81,7 @@ Return exactly one JSON object:
 
 {
   "prefix_valid_until": string,
-  "first_error_span": string or null,
+  "first_error_sentence": string or null,
   "error_type": string,
   "valid_prefix_summary": string,
   "student_plan": string,
@@ -108,16 +108,18 @@ Allowed error_type values:
 Output constraints:
 
 - Output JSON only.
+- prefix_valid_until is the sentence immediately before the first error copied verbatim from the student's trace, or an empty string if no prior sentence is valid.
+- first_error_sentence is the first erroneous sentence copied verbatim from the student's trace.
 - local_repair must be at most 80 words.
 - next_subgoal_after_repair must be at most 40 words.
 - If no error is found:
-  - first_error_span = null
+  - first_error_sentence = null
   - error_type = "none"
   - local_repair = ""
   - next_subgoal_after_repair = null.
 - If the first error is uncertain:
   - error_type = "uncertain"
-  - first_error_span should point to the earliest uncertain step
+  - first_error_sentence should point to the earliest uncertain sentence
   - local_repair should state the missing check or condition."""
 
 
@@ -293,8 +295,8 @@ def validate_diagnostic(value: Any) -> list[str]:
         if not isinstance(value[field_name], str):
             errors.append(f"{field_name} must be a string")
 
-    if value["first_error_span"] is not None and not isinstance(value["first_error_span"], str):
-        errors.append("first_error_span must be a string or null")
+    if value["first_error_sentence"] is not None and not isinstance(value["first_error_sentence"], str):
+        errors.append("first_error_sentence must be a string or null")
     next_subgoal = value["next_subgoal_after_repair"]
     if next_subgoal is not None and not isinstance(next_subgoal, str):
         errors.append("next_subgoal_after_repair must be a string or null")
@@ -309,12 +311,14 @@ def validate_diagnostic(value: Any) -> list[str]:
         errors.append("next_subgoal_after_repair exceeds 40 words")
 
     if error_type == "none":
-        if value["first_error_span"] is not None:
-            errors.append('first_error_span must be null when error_type is "none"')
+        if value["first_error_sentence"] is not None:
+            errors.append('first_error_sentence must be null when error_type is "none"')
         if value["local_repair"] != "":
             errors.append('local_repair must be empty when error_type is "none"')
         if next_subgoal is not None:
             errors.append('next_subgoal_after_repair must be null when error_type is "none"')
+    elif value["first_error_sentence"] is None:
+        errors.append('first_error_sentence must be present unless error_type is "none"')
     return errors
 
 
