@@ -180,7 +180,7 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
                 problem=problem,
                 solution=solution,
                 skeleton=skeletons.get(int(original_index)),
-                answer=ground_truth,
+                ground_truth=ground_truth,
                 problem_id=int(original_index),
             )
             prompt_text = render_chat_prompt(tokenizer, user_message, enable_thinking=spec.enable_thinking)
@@ -243,7 +243,7 @@ def user_message_for_rollout(
     problem: str,
     solution: str,
     skeleton: dict[str, Any] | None,
-    answer: str | None,
+    ground_truth: str | None,
     problem_id: int,
 ) -> str:
     if spec.prompt_kind == "student":
@@ -251,11 +251,11 @@ def user_message_for_rollout(
     if spec.prompt_kind == "base":
         return build_student_user_message(problem)
     if spec.prompt_kind == "reference":
-        return build_reference_user_message(problem, solution, answer=answer)
+        return build_reference_user_message(problem, solution, ground_truth=ground_truth)
     if spec.prompt_kind == "skeleton":
         if skeleton is None:
             raise ValueError(f"missing semantic skeleton for problem_id={problem_id}")
-        return build_semantic_skeleton_user_message(problem, skeleton, answer=answer)
+        return build_semantic_skeleton_user_message(problem, skeleton, ground_truth=ground_truth)
     raise ValueError(f"Unknown prompt kind: {spec.prompt_kind}")
 
 

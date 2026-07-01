@@ -45,17 +45,20 @@ scripts/run_semantic_skeleton_ablation.sh
 
 ## Prompt 是怎么使用 skeleton 的
 
-`teacher_reference` 使用完整 reference solution prompt。`teacher_skeleton` 使用相同 reference solution 外层格式，`Reference Solution` 块中放入 skeleton JSON：
+`teacher_reference` 和 `teacher_skeleton` 使用同一个 privileged prompt 模板，只替换 `{solution}`：
+
+- `teacher_reference`: `{solution}` 是完整 reference solution。
+- `teacher_skeleton`: `{solution}` 是去掉 `final_answer` 字段后的 semantic skeleton JSON。
 
 ```text
 Problem: {problem}
 
+Final answer: {ground_truth}
+
 Here is a reference solution to this problem:
 === Reference Solution Begin ===
-{skeleton_json_without_final_answer}
+{solution}
 === Reference Solution End ===
-
-Final answer: {answer}
 
 After reading the reference solution above, make sure you truly understand the reasoning behind each step - do not copy or paraphrase it. Now, using your own words and independent reasoning, derive the same final answer to the problem above. Think step by step, explore different approaches, and don't be afraid to backtrack or reconsider if something doesn't work out:
 
@@ -65,7 +68,7 @@ Please reason step by step, and put your final answer within \boxed{}.
 注意：
 
 - `teacher_skeleton` prompt 不包含完整 reference solution；`Reference Solution` 块内是 skeleton JSON。
-- skeleton JSON 不包含 `final_answer` 字段；final answer 单独放在 `Final answer: ...` 行。
+- skeleton JSON 不包含 `final_answer` 字段；ground truth 单独放在 `Final answer: ...` 行。
 - `teacher_base` 只包含 problem，不包含 privileged info。
 
 ## 正式实验怎么跑

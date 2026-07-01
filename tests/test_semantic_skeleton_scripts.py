@@ -59,20 +59,21 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertEqual(skeleton["critical_intermediates"], ["2+2=4"])
         self.assertEqual(skeleton["checks"], ["box the answer"])
 
-    def test_reference_prompt_keeps_solution_and_exposes_final_answer(self):
+    def test_reference_prompt_keeps_solution_and_exposes_ground_truth(self):
         from eval.quick_opsd_common import build_reference_user_message
 
         prompt = build_reference_user_message(
             problem="Compute 2+2.",
             solution="A reference solution says 2+2=4.",
-            answer="4",
+            ground_truth="4",
         )
 
         self.assertIn("A reference solution says 2+2=4.", prompt)
         self.assertIn("Final answer: 4", prompt)
+        self.assertLess(prompt.index("Final answer: 4"), prompt.index("Reference Solution Begin"))
         self.assertIn("Please reason step by step, and put your final answer within \\boxed{}.", prompt)
 
-    def test_skeleton_prompt_uses_reference_boundaries_and_exposes_answer_once(self):
+    def test_skeleton_prompt_uses_reference_boundaries_and_exposes_ground_truth_once(self):
         from eval.quick_opsd_common import build_semantic_skeleton_user_message
 
         prompt = build_semantic_skeleton_user_message(
@@ -85,7 +86,7 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
                 "theorem_tags": [],
                 "checks": [],
             },
-            answer="4",
+            ground_truth="4",
         )
 
         self.assertIn("Here is a reference solution to this problem:", prompt)
@@ -99,6 +100,7 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         )[0]
         self.assertNotIn("final_answer", skeleton_block)
         self.assertIn("Final answer: 4", prompt)
+        self.assertLess(prompt.index("Final answer: 4"), prompt.index("Reference Solution Begin"))
         self.assertIn("establish the sum", skeleton_block)
 
 

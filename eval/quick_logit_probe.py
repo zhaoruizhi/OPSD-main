@@ -541,17 +541,17 @@ def rollout_context_prompt(
     record = context_records.get(condition, case) if isinstance(context_records, dict) else case
     problem = str(record.get("problem") or case.get("problem") or "")
     solution = str(record.get("solution") or case.get("solution") or "")
-    answer = record.get("ground_truth", case.get("ground_truth"))
+    ground_truth = record.get("ground_truth", case.get("ground_truth"))
 
     if condition in {"student", "teacher_base"}:
         user_message = build_student_user_message(problem)
     elif condition == "teacher_reference":
-        user_message = build_reference_user_message(problem, solution, answer=answer)
+        user_message = build_reference_user_message(problem, solution, ground_truth=ground_truth)
     elif condition == "teacher_skeleton":
         problem_id = int(record.get("problem_id", case.get("problem_id")))
         if problem_id not in skeletons:
             raise ValueError("--skeleton-file is required when probing teacher_skeleton contexts")
-        user_message = build_semantic_skeleton_user_message(problem, skeletons[problem_id], answer=answer)
+        user_message = build_semantic_skeleton_user_message(problem, skeletons[problem_id], ground_truth=ground_truth)
     else:
         raise ValueError(f"Unknown rollout context condition: {condition}")
 

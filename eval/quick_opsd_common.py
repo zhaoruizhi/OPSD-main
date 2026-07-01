@@ -185,15 +185,15 @@ def build_student_user_message(problem: str) -> str:
     return f"Problem: {problem}\n\nPlease reason step by step, and put your final answer within \\boxed{{}}."
 
 
-def _answer_line(answer: str | None) -> str:
-    if answer in (None, ""):
+def _ground_truth_line(ground_truth: str | None) -> str:
+    if ground_truth in (None, ""):
         return ""
-    return f"\nFinal answer: {answer}\n"
+    return f"Final answer: {ground_truth}\n\n"
 
 
-def build_reference_user_message(problem: str, solution: str, answer: str | None = None) -> str:
+def build_reference_user_message(problem: str, solution: str, ground_truth: str | None = None) -> str:
     transition_prompt = (
-        "\n\nAfter reading the reference solution above, make sure you truly understand "
+        "After reading the reference solution above, make sure you truly understand "
         "the reasoning behind each step - do not copy or paraphrase it. Now, using your "
         "own words and independent reasoning, derive the same final answer to the problem above. "
         "Think step by step, explore different approaches, and don't be afraid to backtrack "
@@ -201,9 +201,9 @@ def build_reference_user_message(problem: str, solution: str, answer: str | None
     )
     return (
         f"Problem: {problem}\n\n"
+        f"{_ground_truth_line(ground_truth)}"
         "Here is a reference solution to this problem:\n"
-        f"=== Reference Solution Begin ===\n{solution}\n=== Reference Solution End ===\n"
-        f"{_answer_line(answer)}"
+        f"=== Reference Solution Begin ===\n{solution}\n=== Reference Solution End ===\n\n"
         f"{transition_prompt}\n"
         "Please reason step by step, and put your final answer within \\boxed{}."
     )
@@ -238,10 +238,10 @@ def normalize_semantic_skeleton(skeleton: dict[str, Any]) -> dict[str, Any]:
 def build_semantic_skeleton_user_message(
     problem: str,
     skeleton: dict[str, Any],
-    answer: str | None = None,
+    ground_truth: str | None = None,
 ) -> str:
     normalized_skeleton = normalize_semantic_skeleton(skeleton)
-    final_answer = answer if answer not in (None, "") else normalized_skeleton.get("final_answer")
+    final_answer = ground_truth if ground_truth not in (None, "") else normalized_skeleton.get("final_answer")
     skeleton_without_answer = {
         key: value for key, value in normalized_skeleton.items() if key != "final_answer"
     }
@@ -251,7 +251,7 @@ def build_semantic_skeleton_user_message(
         indent=2,
         sort_keys=True,
     )
-    return build_reference_user_message(problem, skeleton_json, answer=final_answer)
+    return build_reference_user_message(problem, skeleton_json, ground_truth=final_answer)
 
 
 def _list_or_empty(value: Any) -> list[Any]:

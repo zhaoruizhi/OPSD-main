@@ -90,6 +90,8 @@ class QuickOpsdCommonTests(unittest.TestCase):
         self.assertIn("Here is a reference solution to this problem:", prompt)
         self.assertIn("Reference Solution Begin", prompt)
         self.assertIn("Reference Solution End", prompt)
+        self.assertIn("Final answer: 4", prompt)
+        self.assertLess(prompt.index("Final answer: 4"), prompt.index("Reference Solution Begin"))
         self.assertNotIn("Semantic Skeleton Begin", prompt)
         self.assertNotIn("Semantic Skeleton End", prompt)
         self.assertNotIn("semantic skeleton", prompt.lower())
