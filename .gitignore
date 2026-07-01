@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+.env

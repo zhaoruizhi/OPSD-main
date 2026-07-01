@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="${1:-quick}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+MODEL="${MODEL:-/data0/shared/Qwen3-1.7B}"
+DATASET="${DATASET:-siyanzhao/Openthoughts_math_30k_opsd}"
+SPLIT="${SPLIT:-train}"
+OUT="${OUT:-/data1/opsd_quick/qwen31b_skeleton_ablation_$(date +%Y%m%d_%H%M%S)}"
+SAMPLE_INDICES_FILE=""
+SKELETON_FILE=""
+SAMPLE_SIZE=128
+LOGIT_SIZE=0
+VAL_N=4
+MAX_NEW_TOKENS=1024
+TEMPERATURE=1.1
+TOP_P=0.95
+TOP_K=20
+SEED=0
+GPU_MEMORY_UTILIZATION=0.9
+MAX_MODEL_LEN=20000
+PROBE_TOKENS=0
+TRAJECTORY_SAMPLE_INDEX=0
+SKELETON_MAX_TOKENS=2048
+SKIP_ROLLOUT_ENTROPY=0
+HF_DEVICE_MAP="${HF_DEVICE_MAP:-cuda}"
+GPU_IDS="${GPU_IDS:-4 5 6 7}"
+
+case "$MODE" in
+  smoke)
+    SAMPLE_SIZE=8
+    LOGIT_SIZE=4
+    ;;
+  quick)
+    SAMPLE_SIZE=128
+    LOGIT_SIZE=0
+    ;;
+  *)
+    echo "Usage: $0 {smoke|quick} [--model PATH] [--out DIR] [options]" >&2
+    exit 2
+    ;;
+esac
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model)
+      MODEL="$2"
+      shift 2
+      ;;
+    --dataset)
+      DATASET="$2"
+      shift 2
+      ;;
+    --split)
+      SPLIT="$2"
+      shift 2
+      ;;
+    --out)
+      OUT="$2"
+      shift 2
+      ;;
+    --sample-indices-file)
+      SAMPLE_INDICES_FILE="$2"
+      shift 2
+      ;;
+    --skeleton-file)
+      SKELETON_FILE="$2"
+      shift 2
+      ;;
+    --sample-size)
+      SAMPLE_SIZE="$2"
+      shift 2
+      ;;
+    --logit-size)
+      LOGIT_SIZE="$2"
+      shift 2
+      ;;
+    --val-n)
+      VAL_N="$2"
+      shift 2
+      ;;
+    --max-new-tokens)
+      MAX_NEW_TOKENS="$2"
+      shift 2
+      ;;
+    --temperature)
+      TEMPERATURE="$2"
+      shift 2
+      ;;
+    --top-p)
+      TOP_P="$2"
+      shift 2
+      ;;
+    --top-k)
+      TOP_K="$2"
+      shift 2
+      ;;
+    --seed)
+      SEED="$2"
+      shift 2
+      ;;
+    --gpu-memory-utilization)
+      GPU_MEMORY_UTILIZATION="$2"
+      shift 2
+      ;;
+    --max-model-len)
+      MAX_MODEL_LEN="$2"
+      shift 2
+      ;;
+    --probe-tokens)
+      PROBE_TOKENS="$2"
+      shift 2
+      ;;
+    --trajectory-sample-index)
+      TRAJECTORY_SAMPLE_INDEX="$2"
+      shift 2
+      ;;
+    --skeleton-max-tokens)
+      SKELETON_MAX_TOKENS="$2"
+      shift 2
+      ;;
+    --skip-rollout-entropy)
+      SKIP_ROLLOUT_ENTROPY=1
+      shift
+      ;;
+    --keep-rollout-entropy)
+      SKIP_ROLLOUT_ENTROPY=0
+      shift
+      ;;
+    --hf-device-map)
+      HF_DEVICE_MAP="$2"
+      shift 2
+      ;;
+    --gpus)
+      GPU_IDS="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+mkdir -p "$OUT"
+
+echo "Output directory: $OUT"
+echo "Model: $MODEL"
+echo "Dataset: $DATASET:$SPLIT"
+echo "Mode: $MODE"
+echo "Sample size: $SAMPLE_SIZE | Val-N: $VAL_N | Logit size: $LOGIT_SIZE"
+echo "Phase 3: HF device map=$HF_DEVICE_MAP | Skip rollout entropy=$SKIP_ROLLOUT_ENTROPY"
+read -r -a GPU_ID_ARRAY <<< "$GPU_IDS"
+NUM_SHARDS="${#GPU_ID_ARRAY[@]}"
+if [[ "$NUM_SHARDS" -eq 0 ]]; then
+  echo "No GPU ids configured. Set GPU_IDS or pass --gpus." >&2
+  exit 2
+fi
+echo "GPU ids: ${GPU_ID_ARRAY[*]} | Num shards: $NUM_SHARDS"
+
+echo
+echo "== Phase 0: fixed 128-sample manifest =="
+if [[ -n "$SAMPLE_INDICES_FILE" ]]; then
+  cp "$SAMPLE_INDICES_FILE" "$OUT/sample_indices.json"
+else
+  python eval/prepare_sample_manifest.py \
+    --dataset "$DATASET" \
+    --split "$SPLIT" \
+    --sample-size "$SAMPLE_SIZE" \
+    --seed "$SEED" \
+    --output-file "$OUT/sample_indices.json"
+fi
+
+echo
+echo "== Phase 1: semantic skeleton generation =="
+if [[ -n "$SKELETON_FILE" ]]; then
+  cp "$SKELETON_FILE" "$OUT/skeletons.jsonl"
+else
+  python eval/generate_semantic_skeletons.py \
+    --dataset "$DATASET" \
+    --split "$SPLIT" \
+    --sample-indices-file "$OUT/sample_indices.json" \
+    --output-file "$OUT/skeletons.jsonl" \
+    --max-tokens "$SKELETON_MAX_TOKENS"
+fi
+
+echo
+echo "== Phase 2: standalone rollouts =="
+pids=()
+for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
+  gpu="${GPU_ID_ARRAY[$gpu_index]}"
+  shard_id="$gpu_index"
+  CUDA_VISIBLE_DEVICES=$gpu python eval/quick_rollout_openthoughts.py \
+    --model "$MODEL" \
+    --dataset "$DATASET" \
+    --split "$SPLIT" \
+    --sample-size "$SAMPLE_SIZE" \
+    --sample-indices-file "$OUT/sample_indices.json" \
+    --skeleton-file "$OUT/skeletons.jsonl" \
+    --seed "$SEED" \
+    --shard-id "$shard_id" \
+    --num-shards "$NUM_SHARDS" \
+    --val-n "$VAL_N" \
+    --max-new-tokens "$MAX_NEW_TOKENS" \
+    --temperature "$TEMPERATURE" \
+    --top-p "$TOP_P" \
+    --top-k "$TOP_K" \
+    --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
+    --max-model-len "$MAX_MODEL_LEN" \
+    --output-file "$OUT/rollout_shard${gpu}.jsonl" \
+    --summary-file "$OUT/rollout_summary_shard${gpu}.json" &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do
+  wait "$pid"
+done
+cat "$OUT"/rollout_shard*.jsonl > "$OUT/rollouts.jsonl"
+python eval/quick_rollout_openthoughts.py \
+  --summarize-only \
+  --input-file "$OUT/rollouts.jsonl" \
+  --summary-file "$OUT/rollout_summary.json"
+
+echo
+echo "== Phase 3: full-response logit distribution probe =="
+LOGIT_EXTRA_ARGS=(--hf-device-map "$HF_DEVICE_MAP")
+if [[ "$SKIP_ROLLOUT_ENTROPY" == "1" ]]; then
+  LOGIT_EXTRA_ARGS+=(--skip-rollout-entropy)
+fi
+pids=()
+for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
+  gpu="${GPU_ID_ARRAY[$gpu_index]}"
+  shard_id="$gpu_index"
+  CUDA_VISIBLE_DEVICES=$gpu python eval/quick_logit_probe.py \
+    --model "$MODEL" \
+    --rollout-file "$OUT/rollouts.jsonl" \
+    --skeleton-file "$OUT/skeletons.jsonl" \
+    --trajectory-condition teacher_base \
+    --trajectory-sample-index "$TRAJECTORY_SAMPLE_INDEX" \
+    --logit-size "$LOGIT_SIZE" \
+    --probe-tokens "$PROBE_TOKENS" \
+    --seed "$SEED" \
+    --top-k "$TOP_K" \
+    --max-context-tokens "$MAX_MODEL_LEN" \
+    "${LOGIT_EXTRA_ARGS[@]}" \
+    --shard-id "$shard_id" \
+    --num-shards "$NUM_SHARDS" \
+    --output-file "$OUT/logit_probe_shard${gpu}.jsonl" \
+    --summary-file "$OUT/logit_summary_shard${gpu}.json" &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do
+  wait "$pid"
+done
+cat "$OUT"/logit_probe_shard*.jsonl > "$OUT/logit_probe.jsonl"
+python eval/quick_logit_probe.py \
+  --summarize-only \
+  --input-file "$OUT/logit_probe.jsonl" \
+  --summary-file "$OUT/logit_summary.json"
+
+echo
+echo "Semantic skeleton ablation complete."
+echo "Sample manifest:  $OUT/sample_indices.json"
+echo "Skeletons:        $OUT/skeletons.jsonl"
+echo "Rollout summary:  $OUT/rollout_summary.json"
+echo "Logit summary:    $OUT/logit_summary.json"
