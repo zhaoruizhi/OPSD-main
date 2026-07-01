@@ -51,7 +51,11 @@ except ImportError:  # pragma: no cover
 
 
 LOGPROB_BACKEND = "hf_causal_lm"
-TARGET_TOKEN_SOURCE = "target_tail_text"
+TARGET_TOKEN_SOURCE_TEXT = "target_tail_text"
+TARGET_TOKEN_SOURCE_TOKEN_IDS = "completion_token_ids"
+PROMPT_TOKEN_SOURCE_TEXT = "reconstructed_prompt_text"
+PROMPT_TOKEN_SOURCE_TOKEN_IDS = "prompt_token_ids"
+TARGET_TOKEN_SOURCE = TARGET_TOKEN_SOURCE_TEXT
 TENSOR_REDUCTION_CHUNK_TOKENS = 256
 
 
@@ -175,6 +179,15 @@ def append_jsonl_record(path: str | Path, record: dict[str, Any]) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _coerce_token_ids(value: Any) -> list[int]:
+    if value is None:
+        return []
+    try:
+        return [int(token_id) for token_id in value]
+    except TypeError:
+        return []
+
+
 def select_logit_cases(records: list[dict[str, Any]], logit_size: int, seed: int) -> list[dict[str, Any]]:
     by_case: dict[str, dict[str, Any]] = {}
     for record in records:
@@ -205,7 +218,9 @@ def select_full_response_cases(
         required_conditions.update(context_conditions)
     for record in records:
         condition = str(record.get("condition") or "")
-        if condition not in required_conditions or not record.get("full_generation"):
+        if condition not in required_conditions:
+            continue
+        if not record.get("full_generation") and not _coerce_token_ids(record.get("completion_token_ids")):
             continue
         problem_id = str(record.get("problem_id"))
         try:
@@ -264,6 +279,48 @@ def truncate_target_text(tokenizer: Any, target_text: str, probe_tokens: int) ->
     if probe_tokens > 0:
         token_ids = token_ids[:probe_tokens]
     return tokenizer.decode(token_ids, skip_special_tokens=False), [int(token_id) for token_id in token_ids]
+
+
+def target_token_ids_for_case(
+    tokenizer: Any,
+    case: dict[str, Any],
+    probe_tokens: int,
+) -> tuple[str, list[int], str]:
+    token_ids = _coerce_token_ids(case.get("completion_token_ids"))
+    if token_ids:
+        if probe_tokens > 0:
+            token_ids = token_ids[:probe_tokens]
+        target_text = tokenizer.decode(token_ids, skip_special_tokens=False)
+        return target_text, token_ids, TARGET_TOKEN_SOURCE_TOKEN_IDS
+
+    target_text, token_ids = truncate_target_text(
+        tokenizer,
+        str(case.get("target_tail_text") or ""),
+        probe_tokens,
+    )
+    return target_text, token_ids, TARGET_TOKEN_SOURCE_TEXT
+
+
+def context_prompt_ids_for_condition(
+    tokenizer: Any,
+    case: dict[str, Any],
+    condition: str,
+    skeletons: dict[int, dict[str, Any]],
+) -> tuple[list[int], str]:
+    context_records = case.get("context_records")
+    record = context_records.get(condition, case) if isinstance(context_records, dict) else case
+    prompt_ids = _coerce_token_ids(record.get("prompt_token_ids"))
+    if prompt_ids:
+        return prompt_ids, PROMPT_TOKEN_SOURCE_TOKEN_IDS
+
+    prompt_text = rollout_context_prompt(
+        tokenizer=tokenizer,
+        case=case,
+        condition=condition,
+        skeletons=skeletons,
+    )
+    encoded = tokenizer(prompt_text, add_special_tokens=False)
+    return _coerce_token_ids(encoded.get("input_ids")), PROMPT_TOKEN_SOURCE_TEXT
 
 
 def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -331,7 +388,11 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
             if not pending:
                 continue
 
-            target_text, target_ids = truncate_target_text(tokenizer, str(case.get("target_tail_text") or ""), args.probe_tokens)
+            _target_text, target_ids, target_token_source = target_token_ids_for_case(
+                tokenizer,
+                case,
+                args.probe_tokens,
+            )
             if not target_ids:
                 continue
 
@@ -340,7 +401,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                 for condition in (base_condition, teacher_condition):
                     if condition in condition_log_probs:
                         continue
-                    prompt_text = rollout_context_prompt(
+                    prompt_ids, _prompt_token_source = context_prompt_ids_for_condition(
                         tokenizer=tokenizer,
                         case=case,
                         condition=condition,
@@ -348,9 +409,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                     )
                     condition_log_probs[condition] = compute_target_log_probs_hf(
                         model=model,
-                        tokenizer=tokenizer,
-                        prompt_text=prompt_text,
-                        target_text=target_text,
+                        prompt_ids=prompt_ids,
                         target_ids=target_ids,
                         max_context_tokens=args.max_context_tokens,
                     )
@@ -366,6 +425,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                     top_k=args.top_k,
                     top_kl_positions=args.top_kl_positions,
                     first_window_tokens=args.first_window_tokens,
+                    target_token_source=target_token_source,
                 )
                 key = logit_record_key(record)
                 if key in completed_keys:
@@ -387,11 +447,15 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                 entropy_key = f"rollout_entropy:{case.get('case_id')}:{case.get('target_condition')}"
                 if entropy_key in completed_keys:
                     continue
-                target_text, target_ids = truncate_target_text(tokenizer, str(case.get("target_tail_text") or ""), args.probe_tokens)
+                _target_text, target_ids, target_token_source = target_token_ids_for_case(
+                    tokenizer,
+                    case,
+                    args.probe_tokens,
+                )
                 if not target_ids:
                     continue
                 condition = str(case.get("target_condition") or case.get("condition"))
-                prompt_text = rollout_context_prompt(
+                prompt_ids, _prompt_token_source = context_prompt_ids_for_condition(
                     tokenizer=tokenizer,
                     case=case,
                     condition=condition,
@@ -399,9 +463,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                 )
                 log_probs = compute_target_log_probs_hf(
                     model=model,
-                    tokenizer=tokenizer,
-                    prompt_text=prompt_text,
-                    target_text=target_text,
+                    prompt_ids=prompt_ids,
                     target_ids=target_ids,
                     max_context_tokens=args.max_context_tokens,
                 )
@@ -410,6 +472,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                     tokenizer=tokenizer,
                     target_ids=target_ids,
                     log_probs=log_probs,
+                    target_token_source=target_token_source,
                 )
                 key = logit_record_key(record)
                 if key in completed_keys:
@@ -422,7 +485,11 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
     prefix_records = read_jsonl(args.prefix_file)
     cases = shard_cases(select_logit_cases(prefix_records, args.logit_size, args.seed), args.shard_id, args.num_shards)
     for case in cases:
-        target_text, target_ids = truncate_target_text(tokenizer, str(case.get("target_tail_text") or ""), args.probe_tokens)
+        _target_text, target_ids, target_token_source = target_token_ids_for_case(
+            tokenizer,
+            case,
+            args.probe_tokens,
+        )
         if not target_ids:
             continue
         contexts = {
@@ -433,9 +500,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
         context_log_probs = {
             condition: compute_target_log_probs_hf(
                 model=model,
-                tokenizer=tokenizer,
-                prompt_text=prompt_text,
-                target_text=target_text,
+                prompt_ids=_coerce_token_ids(tokenizer(prompt_text, add_special_tokens=False)["input_ids"]),
                 target_ids=target_ids,
                 max_context_tokens=args.max_context_tokens,
             )
@@ -458,6 +523,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                 top_k=args.top_k,
                 top_kl_positions=args.top_kl_positions,
                 first_window_tokens=args.first_window_tokens,
+                target_token_source=target_token_source,
             )
             append_jsonl_record(args.output_file, record)
             completed_keys.add(key)
@@ -516,15 +582,12 @@ def prefix_context_prompt(tokenizer: Any, case: dict[str, Any], prompt_kind: str
 
 def compute_target_log_probs_hf(
     model: Any,
-    tokenizer: Any,
-    prompt_text: str,
-    target_text: str,
+    prompt_ids: list[int],
     target_ids: list[int],
     max_context_tokens: int,
 ) -> Any:
     import torch
 
-    prompt_ids = [int(token_id) for token_id in tokenizer(prompt_text, add_special_tokens=False)["input_ids"]]
     max_prompt_tokens = max(1, max_context_tokens - len(target_ids))
     if len(prompt_ids) > max_prompt_tokens:
         prompt_ids = prompt_ids[-max_prompt_tokens:]
@@ -666,6 +729,7 @@ def compare_contexts(
     top_k: int,
     top_kl_positions: int,
     first_window_tokens: int,
+    target_token_source: str = TARGET_TOKEN_SOURCE_TEXT,
 ) -> dict[str, Any]:
     if len(student_log_probs) != len(target_ids) or len(teacher_log_probs) != len(target_ids):
         raise ValueError("log-prob row counts must match target token count")
@@ -749,7 +813,7 @@ def compare_contexts(
     return {
         "record_type": "kl_contrast",
         "logprob_backend": LOGPROB_BACKEND,
-        "target_token_source": TARGET_TOKEN_SOURCE,
+        "target_token_source": target_token_source,
         "case_id": case.get("case_id"),
         "problem_id": case.get("problem_id"),
         "contrast": contrast,
@@ -799,6 +863,7 @@ def build_rollout_entropy_record(
     tokenizer: Any,
     target_ids: list[int],
     log_probs: Any,
+    target_token_source: str = TARGET_TOKEN_SOURCE_TEXT,
 ) -> dict[str, Any]:
     if _is_tensor(log_probs):
         entropy_values = []
@@ -814,7 +879,7 @@ def build_rollout_entropy_record(
     return {
         "record_type": "rollout_entropy",
         "logprob_backend": LOGPROB_BACKEND,
-        "target_token_source": TARGET_TOKEN_SOURCE,
+        "target_token_source": target_token_source,
         "case_id": case.get("case_id"),
         "problem_id": case.get("problem_id"),
         "condition": case.get("target_condition", case.get("condition")),

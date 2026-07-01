@@ -66,6 +66,20 @@ def build_rollout_condition_specs() -> list[RolloutConditionSpec]:
     ]
 
 
+def _int_token_ids(value: Any) -> list[int]:
+    if value is None:
+        return []
+    try:
+        return [int(token_id) for token_id in value]
+    except TypeError:
+        return []
+
+
+def _encode_prompt_token_ids(tokenizer: Any, prompt_text: str) -> list[int]:
+    encoded = tokenizer(prompt_text, add_special_tokens=False)
+    return _int_token_ids(encoded.get("input_ids"))
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run OPSD quick standalone rollouts on OpenThoughts data.")
     parser.add_argument("--model", type=str, default="/data0/shared/Qwen3-1.7B")
@@ -173,6 +187,7 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
             prompts.append(prompt_text)
             metadata.append(
                 {
+                    "_prompt_text": prompt_text,
                     "problem_id": original_index,
                     "problem": problem,
                     "solution": solution,
@@ -184,23 +199,30 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
 
         outputs = llm.generate(prompts, sampling_params, use_tqdm=True)
         for meta, output in zip(metadata, outputs):
+            prompt_token_ids = _int_token_ids(getattr(output, "prompt_token_ids", None))
+            if not prompt_token_ids:
+                prompt_token_ids = _encode_prompt_token_ids(tokenizer, str(meta.get("_prompt_text") or ""))
+            record_meta = {key: value for key, value in meta.items() if not key.startswith("_")}
             for sample_index, completion in enumerate(output.outputs):
                 text = completion.text
+                completion_token_ids = _int_token_ids(getattr(completion, "token_ids", None))
                 predicted = extract_boxed_answer(text)
                 metrics = continuation_metrics(
                     prefix="",
                     continuation=text,
-                    ground_truth=meta["ground_truth"],
-                    reference_solution=meta["solution"],
+                    ground_truth=record_meta["ground_truth"],
+                    reference_solution=record_meta["solution"],
                 )
                 output_records.append(
                     {
-                        **meta,
+                        **record_meta,
                         "condition": spec.name,
                         "enable_thinking": spec.enable_thinking,
                         "sample_index": sample_index,
                         "predicted_answer": predicted,
                         "full_generation": text,
+                        "prompt_token_ids": prompt_token_ids,
+                        "completion_token_ids": completion_token_ids,
                         "formatted": metrics["formatted"],
                         "correct": metrics["correct"],
                         "restart": metrics["restart"],
@@ -208,7 +230,7 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
                         "notation_consistency": metrics["notation_consistency"],
                         "locality_score": metrics["locality_score"],
                         "reference_copy_rate": metrics["reference_copy_rate"],
-                        "completion_tokens": len(getattr(completion, "token_ids", []) or []),
+                        "completion_tokens": len(completion_token_ids),
                         "finish_reason": getattr(completion, "finish_reason", None),
                     }
                 )

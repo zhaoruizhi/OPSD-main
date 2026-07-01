@@ -73,7 +73,7 @@ class QuickOpsdCommonTests(unittest.TestCase):
         self.assertIn(json.dumps("reach 4")[1:-1], intervention)
         self.assertIn("Do not restart", intervention)
 
-    def test_semantic_skeleton_prompt_uses_structured_reference_only(self):
+    def test_semantic_skeleton_prompt_uses_reference_prompt_shape(self):
         prompt = build_semantic_skeleton_user_message(
             "2+2?",
             {
@@ -87,12 +87,14 @@ class QuickOpsdCommonTests(unittest.TestCase):
         )
 
         self.assertIn("Problem: 2+2?", prompt)
-        self.assertIn("Here is a style-neutral semantic skeleton extracted from a reference solution:", prompt)
-        self.assertIn("Semantic Skeleton Begin", prompt)
-        self.assertIn("Semantic Skeleton End", prompt)
+        self.assertIn("Here is a reference solution to this problem:", prompt)
+        self.assertIn("Reference Solution Begin", prompt)
+        self.assertIn("Reference Solution End", prompt)
+        self.assertNotIn("Semantic Skeleton Begin", prompt)
+        self.assertNotIn("Semantic Skeleton End", prompt)
+        self.assertNotIn("semantic skeleton", prompt.lower())
         self.assertIn('"critical_intermediates"', prompt)
         self.assertIn('"checks"', prompt)
-        self.assertIn("semantic skeleton", prompt.lower())
 
     def test_normalize_semantic_skeleton_accepts_legacy_aliases(self):
         skeleton = normalize_semantic_skeleton(

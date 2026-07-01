@@ -251,16 +251,7 @@ def build_semantic_skeleton_user_message(
         indent=2,
         sort_keys=True,
     )
-    return (
-        f"Problem: {problem}\n\n"
-        "Here is a style-neutral semantic skeleton extracted from a reference solution:\n"
-        f"=== Semantic Skeleton Begin ===\n{skeleton_json}\n=== Semantic Skeleton End ===\n"
-        f"{_answer_line(final_answer)}"
-        "\nUse the semantic skeleton above only as privileged mathematical guidance. "
-        "Do not copy or paraphrase any reference wording; reason in your own words, "
-        "fill in the missing derivation, and derive the same final answer independently.\n\n"
-        "Please reason step by step, and put your final answer within \\boxed{}."
-    )
+    return build_reference_user_message(problem, skeleton_json, answer=final_answer)
 
 
 def _list_or_empty(value: Any) -> list[Any]:

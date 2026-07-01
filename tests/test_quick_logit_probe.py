@@ -6,11 +6,14 @@ from unittest.mock import patch
 
 from eval.quick_opsd_common import summarize_logit_records
 from eval.quick_logit_probe import (
+    build_rollout_entropy_record,
     build_top_kl_positions,
     compare_contexts,
     completed_logit_record_keys,
+    context_prompt_ids_for_condition,
     select_full_response_cases,
     shard_cases,
+    target_token_ids_for_case,
     truncate_target_text,
 )
 
@@ -188,6 +191,53 @@ class QuickLogitProbeTests(unittest.TestCase):
         self.assertEqual(text, "ab")
         self.assertEqual(token_ids, [97, 98])
 
+    def test_target_token_ids_prefers_stored_completion_ids(self):
+        class FakeTokenizer:
+            def __call__(self, text, add_special_tokens=False):
+                raise AssertionError("stored completion ids should avoid text tokenization")
+
+            def decode(self, token_ids, skip_special_tokens=False):
+                return "".join(chr(token_id) for token_id in token_ids)
+
+        text, token_ids, source = target_token_ids_for_case(
+            FakeTokenizer(),
+            {
+                "target_tail_text": "abcd",
+                "completion_token_ids": [120, 121, 122],
+            },
+            probe_tokens=2,
+        )
+
+        self.assertEqual(text, "xy")
+        self.assertEqual(token_ids, [120, 121])
+        self.assertEqual(source, "completion_token_ids")
+
+    def test_context_prompt_ids_prefers_stored_prompt_ids(self):
+        class FakeTokenizer:
+            def __call__(self, text, add_special_tokens=False):
+                raise AssertionError("stored prompt ids should avoid prompt reconstruction")
+
+            def apply_chat_template(self, *args, **kwargs):
+                raise AssertionError("stored prompt ids should avoid prompt reconstruction")
+
+        prompt_ids, source = context_prompt_ids_for_condition(
+            tokenizer=FakeTokenizer(),
+            case={
+                "problem": "2+2?",
+                "context_records": {
+                    "teacher_base": {
+                        "condition": "teacher_base",
+                        "prompt_token_ids": [7, 8, 9],
+                    }
+                },
+            },
+            condition="teacher_base",
+            skeletons={},
+        )
+
+        self.assertEqual(prompt_ids, [7, 8, 9])
+        self.assertEqual(source, "prompt_token_ids")
+
     def test_compare_contexts_uses_hf_logprob_rows(self):
         class FakeTokenizer:
             def decode(self, token_ids, skip_special_tokens=False):
@@ -221,6 +271,40 @@ class QuickLogitProbeTests(unittest.TestCase):
         self.assertEqual(record["top1_agreement"], 0.0)
         self.assertEqual(record["top_kl_positions"][0]["teacher_top_tokens"], [{"token": "A", "prob": 0.8, "logprob": -0.2231435513142097}])
         self.assertEqual(record["top_kl_positions"][0]["base_top_tokens"], [{"token": "B", "prob": 0.8, "logprob": -0.2231435513142097}])
+
+    def test_records_can_report_completion_token_id_source(self):
+        class FakeTokenizer:
+            def decode(self, token_ids, skip_special_tokens=False):
+                return {0: "A", 1: "B"}[token_ids[0]]
+
+        log_probs = [
+            {0: -0.2231435513142097, 1: -1.6094379124341003},
+            {0: -1.6094379124341003, 1: -0.2231435513142097},
+        ]
+        case = {"case_id": "1:0:teacher_base", "problem_id": 1, "target_condition": "teacher_base"}
+
+        contrast_record = compare_contexts(
+            case=case,
+            tokenizer=FakeTokenizer(),
+            target_ids=[0, 1],
+            student_log_probs=log_probs,
+            teacher_log_probs=log_probs,
+            contrast="teacher_reference_vs_teacher_base",
+            top_k=1,
+            top_kl_positions=2,
+            first_window_tokens=1,
+            target_token_source="completion_token_ids",
+        )
+        entropy_record = build_rollout_entropy_record(
+            case=case,
+            tokenizer=FakeTokenizer(),
+            target_ids=[0, 1],
+            log_probs=log_probs,
+            target_token_source="completion_token_ids",
+        )
+
+        self.assertEqual(contrast_record["target_token_source"], "completion_token_ids")
+        self.assertEqual(entropy_record["target_token_source"], "completion_token_ids")
 
     def test_build_top_kl_positions_includes_token_context(self):
         positions = build_top_kl_positions(
