@@ -25,6 +25,15 @@ MAX_MODEL_LEN=20000
 PROBE_TOKENS=0
 TRAJECTORY_SAMPLE_INDEX=0
 SKELETON_MAX_TOKENS=2048
+SKELETON_BACKEND="${SKELETON_BACKEND:-api}"
+SKELETON_MODEL="${SKELETON_MODEL:-}"
+SKELETON_GPUS="${SKELETON_GPUS:-}"
+SKELETON_VLLM_TENSOR_PARALLEL_SIZE="${SKELETON_VLLM_TENSOR_PARALLEL_SIZE:-1}"
+SKELETON_VLLM_GPU_MEMORY_UTILIZATION="${SKELETON_VLLM_GPU_MEMORY_UTILIZATION:-$GPU_MEMORY_UTILIZATION}"
+SKELETON_VLLM_MAX_MODEL_LEN="${SKELETON_VLLM_MAX_MODEL_LEN:-$MAX_MODEL_LEN}"
+SKELETON_VLLM_TOP_P="${SKELETON_VLLM_TOP_P:-1.0}"
+SKELETON_VLLM_TOP_K="${SKELETON_VLLM_TOP_K:--1}"
+SKELETON_VLLM_ENABLE_THINKING="${SKELETON_VLLM_ENABLE_THINKING:-0}"
 SKIP_ROLLOUT_ENTROPY=0
 HF_DEVICE_MAP="${HF_DEVICE_MAP:-cuda}"
 GPU_IDS="${GPU_IDS:-4 5 6 7}"
@@ -122,6 +131,46 @@ while [[ $# -gt 0 ]]; do
       SKELETON_MAX_TOKENS="$2"
       shift 2
       ;;
+    --skeleton-backend)
+      SKELETON_BACKEND="$2"
+      shift 2
+      ;;
+    --skeleton-model)
+      SKELETON_MODEL="$2"
+      shift 2
+      ;;
+    --skeleton-gpus)
+      SKELETON_GPUS="$2"
+      shift 2
+      ;;
+    --skeleton-vllm-tensor-parallel-size)
+      SKELETON_VLLM_TENSOR_PARALLEL_SIZE="$2"
+      shift 2
+      ;;
+    --skeleton-vllm-gpu-memory-utilization)
+      SKELETON_VLLM_GPU_MEMORY_UTILIZATION="$2"
+      shift 2
+      ;;
+    --skeleton-vllm-max-model-len)
+      SKELETON_VLLM_MAX_MODEL_LEN="$2"
+      shift 2
+      ;;
+    --skeleton-vllm-top-p)
+      SKELETON_VLLM_TOP_P="$2"
+      shift 2
+      ;;
+    --skeleton-vllm-top-k)
+      SKELETON_VLLM_TOP_K="$2"
+      shift 2
+      ;;
+    --skeleton-enable-thinking)
+      SKELETON_VLLM_ENABLE_THINKING=1
+      shift
+      ;;
+    --skeleton-disable-thinking)
+      SKELETON_VLLM_ENABLE_THINKING=0
+      shift
+      ;;
     --skip-rollout-entropy)
       SKIP_ROLLOUT_ENTROPY=1
       shift
@@ -159,7 +208,22 @@ if [[ "$NUM_SHARDS" -eq 0 ]]; then
   echo "No GPU ids configured. Set GPU_IDS or pass --gpus." >&2
   exit 2
 fi
+if [[ -z "$SKELETON_GPUS" ]]; then
+  SKELETON_GPUS="${GPU_ID_ARRAY[0]}"
+fi
+SKELETON_MODEL_FOR_RUN="$SKELETON_MODEL"
+if [[ -z "$SKELETON_MODEL_FOR_RUN" ]]; then
+  if [[ "$SKELETON_BACKEND" == "vllm" ]]; then
+    SKELETON_MODEL_FOR_RUN="$MODEL"
+  else
+    SKELETON_MODEL_FOR_RUN="deepseek-v4-pro"
+  fi
+fi
 echo "GPU ids: ${GPU_ID_ARRAY[*]} | Num shards: $NUM_SHARDS"
+echo "Skeleton backend: $SKELETON_BACKEND | Skeleton model: $SKELETON_MODEL_FOR_RUN"
+if [[ "$SKELETON_BACKEND" == "vllm" ]]; then
+  echo "Skeleton vLLM GPUs: $SKELETON_GPUS | TP: $SKELETON_VLLM_TENSOR_PARALLEL_SIZE"
+fi
 
 echo
 echo "== Phase 0: fixed 128-sample manifest =="
@@ -179,12 +243,31 @@ echo "== Phase 1: semantic skeleton generation =="
 if [[ -n "$SKELETON_FILE" ]]; then
   cp "$SKELETON_FILE" "$OUT/skeletons.jsonl"
 else
-  python eval/generate_semantic_skeletons.py \
-    --dataset "$DATASET" \
-    --split "$SPLIT" \
-    --sample-indices-file "$OUT/sample_indices.json" \
-    --output-file "$OUT/skeletons.jsonl" \
+  SKELETON_GENERATE_ARGS=(
+    eval/generate_semantic_skeletons.py
+    --dataset "$DATASET"
+    --split "$SPLIT"
+    --sample-indices-file "$OUT/sample_indices.json"
+    --output-file "$OUT/skeletons.jsonl"
+    --skeleton-backend "$SKELETON_BACKEND"
+    --skeleton-model "$SKELETON_MODEL_FOR_RUN"
     --max-tokens "$SKELETON_MAX_TOKENS"
+  )
+  if [[ "$SKELETON_BACKEND" == "vllm" ]]; then
+    SKELETON_GENERATE_ARGS+=(
+      --vllm-tensor-parallel-size "$SKELETON_VLLM_TENSOR_PARALLEL_SIZE"
+      --vllm-gpu-memory-utilization "$SKELETON_VLLM_GPU_MEMORY_UTILIZATION"
+      --vllm-max-model-len "$SKELETON_VLLM_MAX_MODEL_LEN"
+      --vllm-top-p "$SKELETON_VLLM_TOP_P"
+      --vllm-top-k "$SKELETON_VLLM_TOP_K"
+    )
+    if [[ "$SKELETON_VLLM_ENABLE_THINKING" == "1" ]]; then
+      SKELETON_GENERATE_ARGS+=(--vllm-enable-thinking)
+    fi
+    CUDA_VISIBLE_DEVICES="$SKELETON_GPUS" python "${SKELETON_GENERATE_ARGS[@]}"
+  else
+    python "${SKELETON_GENERATE_ARGS[@]}"
+  fi
 fi
 
 echo

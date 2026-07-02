@@ -59,6 +59,84 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertEqual(skeleton["critical_intermediates"], ["2+2=4"])
         self.assertEqual(skeleton["checks"], ["box the answer"])
 
+    def test_generate_skeleton_record_can_use_injected_local_completion(self):
+        from eval.generate_semantic_skeletons import generate_skeleton_record
+
+        calls = []
+
+        def local_completion(*, answer, reference_solution):
+            calls.append({"answer": answer, "reference_solution": reference_solution})
+            return (
+                '{"final_answer":"4","key_objects":[],"subgoals":["establish the sum"],'
+                '"critical_intermediates":["2+2=4"],"theorem_tags":[],"checks":[]}'
+            )
+
+        record = generate_skeleton_record(
+            problem_id=11,
+            example={"answer": "4", "solution": "Compute 2+2 and conclude."},
+            api_key=None,
+            base_url=None,
+            model="/data0/shared/Qwen3-1.7B",
+            temperature=0.0,
+            max_tokens=128,
+            timeout=1.0,
+            max_retries=0,
+            skeleton_backend="vllm",
+            completion_fn=local_completion,
+        )
+
+        self.assertEqual(record["status"], "ok")
+        self.assertEqual(record["skeleton_backend"], "vllm")
+        self.assertEqual(record["model"], "/data0/shared/Qwen3-1.7B")
+        self.assertEqual(record["skeleton"]["subgoals"], ["establish the sum"])
+        self.assertEqual(calls, [{"answer": "4", "reference_solution": "Compute 2+2 and conclude."}])
+
+    def test_render_skeleton_compiler_prompt_uses_system_user_messages_and_thinking_flag(self):
+        from eval.generate_semantic_skeletons import SYSTEM_PROMPT, render_skeleton_compiler_prompt
+
+        class FakeTokenizer:
+            def __init__(self):
+                self.calls = []
+
+            def apply_chat_template(self, messages, **kwargs):
+                self.calls.append({"messages": messages, "kwargs": kwargs})
+                return "rendered prompt"
+
+        tokenizer = FakeTokenizer()
+
+        prompt = render_skeleton_compiler_prompt(
+            tokenizer,
+            answer="4",
+            reference_solution="Compute 2+2.",
+            enable_thinking=False,
+        )
+
+        self.assertEqual(prompt, "rendered prompt")
+        self.assertEqual(
+            tokenizer.calls[0]["messages"],
+            [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "ANSWER:\n4\n\nREFERENCE_SOLUTION:\nCompute 2+2."},
+            ],
+        )
+        self.assertEqual(
+            tokenizer.calls[0]["kwargs"],
+            {"tokenize": False, "add_generation_prompt": True, "enable_thinking": False},
+        )
+
+    def test_run_script_exposes_vllm_skeleton_backend_controls(self):
+        from pathlib import Path
+
+        script = Path("scripts/run_semantic_skeleton_ablation.sh").read_text(encoding="utf-8")
+
+        self.assertIn('SKELETON_BACKEND="${SKELETON_BACKEND:-api}"', script)
+        self.assertIn("--skeleton-backend)", script)
+        self.assertIn("--skeleton-model)", script)
+        self.assertIn("--skeleton-gpus)", script)
+        self.assertIn('--skeleton-backend "$SKELETON_BACKEND"', script)
+        self.assertIn('--skeleton-model "$SKELETON_MODEL_FOR_RUN"', script)
+        self.assertIn('CUDA_VISIBLE_DEVICES="$SKELETON_GPUS"', script)
+
     def test_reference_prompt_keeps_solution_and_exposes_ground_truth(self):
         from eval.quick_opsd_common import build_reference_user_message
 
