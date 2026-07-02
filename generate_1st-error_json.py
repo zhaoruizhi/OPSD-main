@@ -108,6 +108,7 @@ Allowed error_type values:
 Output constraints:
 
 - Output JSON only.
+- Escape every backslash in JSON strings, or avoid LaTeX backslash commands.
 - prefix_valid_until is the sentence immediately before the first error copied verbatim from the student's trace, or an empty string if no prior sentence is valid.
 - first_error_sentence is the first erroneous sentence copied verbatim from the student's trace.
 - local_repair must be at most 80 words.
@@ -327,17 +328,100 @@ def parse_json_object(text: str) -> dict[str, Any]:
     if stripped.startswith("```"):
         stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
         stripped = re.sub(r"\s*```$", "", stripped)
-    try:
-        value = json.loads(stripped)
-    except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start < 0 or end < start:
-            raise
-        value = json.loads(stripped[start : end + 1])
-    if not isinstance(value, dict):
-        raise ValueError("Model output was valid JSON but not an object")
-    return value
+
+    candidates = [stripped]
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if 0 <= start < end:
+        object_text = stripped[start : end + 1]
+        if object_text != stripped:
+            candidates.append(object_text)
+
+    last_decode_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        repaired_candidate = escape_invalid_json_string_backslashes(candidate)
+        for candidate_variant in _dedupe_preserving_order([candidate, repaired_candidate]):
+            try:
+                value = json.loads(candidate_variant)
+            except json.JSONDecodeError as exc:
+                last_decode_error = exc
+                continue
+            if not isinstance(value, dict):
+                raise ValueError("Model output was valid JSON but not an object")
+            return value
+
+    if last_decode_error is not None:
+        raise last_decode_error
+    raise ValueError("Model output did not contain a JSON object")
+
+
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique_values: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique_values.append(value)
+    return unique_values
+
+
+def escape_invalid_json_string_backslashes(text: str) -> str:
+    """Preserve LaTeX-style backslashes that models often emit in JSON strings."""
+    repaired: list[str] = []
+    inside_string = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if not inside_string:
+            repaired.append(char)
+            if char == '"':
+                inside_string = True
+            index += 1
+            continue
+
+        if char == '"':
+            repaired.append(char)
+            inside_string = False
+            index += 1
+            continue
+
+        if char != "\\":
+            repaired.append(char)
+            index += 1
+            continue
+
+        if index + 1 >= len(text):
+            repaired.append("\\\\")
+            index += 1
+            continue
+
+        next_char = text[index + 1]
+        if next_char == "u" and _has_valid_unicode_escape(text, index + 2):
+            repaired.append(text[index : index + 6])
+            index += 6
+            continue
+        if next_char.isalpha():
+            repaired.append("\\\\")
+            repaired.append(next_char)
+            index += 2
+            continue
+        if next_char in {'"', "\\", "/", "b", "f", "n", "r", "t"}:
+            repaired.append("\\")
+            repaired.append(next_char)
+            index += 2
+            continue
+
+        repaired.append("\\\\")
+        repaired.append(next_char)
+        index += 2
+    return "".join(repaired)
+
+
+def _has_valid_unicode_escape(text: str, start: int) -> bool:
+    if start + 4 > len(text):
+        return False
+    return all(char in "0123456789abcdefABCDEF" for char in text[start : start + 4])
 
 
 def chat_completion(
@@ -466,11 +550,25 @@ def load_completed_problem_ids(path: Path) -> set[int]:
     if not path.exists():
         return set()
     completed = set()
+    invalid_records: list[str] = []
     for record in read_jsonl(path):
         problem_id = record.get("problem_id")
         diagnostic = record.get("diagnostic")
-        if isinstance(problem_id, int) and not validate_diagnostic(diagnostic):
+        validation_errors = validate_diagnostic(diagnostic)
+        if isinstance(problem_id, int) and not validation_errors:
             completed.add(problem_id)
+        else:
+            invalid_records.append(
+                f"problem_id={problem_id!r}: {validation_errors or ['problem_id must be an integer']}"
+            )
+    if invalid_records:
+        examples = "; ".join(invalid_records[:3])
+        if len(invalid_records) > 3:
+            examples += f"; ... {len(invalid_records) - 3} more"
+        raise ValueError(
+            f"Invalid existing diagnostic records in {path}: {examples}. "
+            "Remove this file or rerun generate_1st-error_json.py with --no-resume."
+        )
     return completed
 
 

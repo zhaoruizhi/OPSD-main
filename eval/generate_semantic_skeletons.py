@@ -41,6 +41,9 @@ The input may NOT contain the original problem statement. Therefore:
    uncertain. Never fill missing information with plausible guesses.
 3. Return exactly one valid JSON object. Do not use Markdown, code fences,
    comments, or text outside the JSON object.
+4. Avoid LaTeX backslash commands in string values. Prefer plain text such as
+   frac(a,b), sqrt(x), mod 5, or theta. If a backslash is unavoidable, escape
+   it as \\ so the object remains valid JSON.
 
 Produce the following schema:
 
@@ -146,8 +149,90 @@ def render_skeleton_compiler_prompt(
         )
 
 
+def strip_json_code_fence(content: str) -> str:
+    stripped = content.strip()
+    if not stripped.startswith("```"):
+        return stripped
+
+    lines = stripped.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def is_valid_unicode_escape_start(content: str, index: int) -> bool:
+    if index + 5 >= len(content) or content[index + 1] != "u":
+        return False
+    return all(ch in "0123456789abcdefABCDEF" for ch in content[index + 2 : index + 6])
+
+
+def escape_latex_backslashes_in_json_strings(content: str) -> str:
+    output: list[str] = []
+    in_string = False
+    index = 0
+    while index < len(content):
+        ch = content[index]
+        if not in_string:
+            if ch == '"':
+                in_string = True
+            output.append(ch)
+            index += 1
+            continue
+
+        if ch == '"':
+            in_string = False
+            output.append(ch)
+            index += 1
+            continue
+
+        if ch != "\\":
+            output.append(ch)
+            index += 1
+            continue
+
+        next_ch = content[index + 1] if index + 1 < len(content) else ""
+        if next_ch in {'"', "\\", "/"}:
+            output.append(ch)
+            output.append(next_ch)
+            index += 2
+            continue
+        if is_valid_unicode_escape_start(content, index):
+            output.append(content[index : index + 6])
+            index += 6
+            continue
+
+        output.append("\\\\")
+        index += 1
+
+    return "".join(output)
+
+
+def contains_control_character(value: Any) -> bool:
+    if isinstance(value, str):
+        return any(ord(ch) < 32 for ch in value)
+    if isinstance(value, list):
+        return any(contains_control_character(item) for item in value)
+    if isinstance(value, dict):
+        return any(contains_control_character(item) for item in value.values())
+    return False
+
+
 def parse_skeleton_response(content: str) -> dict[str, Any]:
-    parsed = json.loads(content.strip())
+    stripped = strip_json_code_fence(content)
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        repaired = escape_latex_backslashes_in_json_strings(stripped)
+        parsed = json.loads(repaired)
+    else:
+        if contains_control_character(parsed):
+            repaired = escape_latex_backslashes_in_json_strings(stripped)
+            try:
+                parsed = json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
     return normalize_semantic_skeleton(parsed)
 
 

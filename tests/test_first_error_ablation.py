@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -38,12 +40,16 @@ def valid_diagnostic():
 
 
 class FirstErrorAblationTests(unittest.TestCase):
-    def test_generator_diagnostic_schema_requires_sentence_fields(self):
+    def _load_generator_module(self):
         module_path = Path(__file__).resolve().parents[1] / "generate_1st-error_json.py"
         spec = importlib.util.spec_from_file_location("generate_1st_error_json", module_path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(module)
+        return module
+
+    def test_generator_diagnostic_schema_requires_sentence_fields(self):
+        module = self._load_generator_module()
 
         self.assertEqual(module.validate_diagnostic(valid_diagnostic()), [])
 
@@ -59,6 +65,39 @@ class FirstErrorAblationTests(unittest.TestCase):
             'first_error_sentence must be null when error_type is "none"',
             module.validate_diagnostic(invalid_none),
         )
+
+    def test_generator_parser_repairs_invalid_latex_backslashes(self):
+        module = self._load_generator_module()
+
+        parsed = module.parse_json_object(
+            r"""{
+  "prefix_valid_until": "Use \sin 3A.",
+  "first_error_sentence": "The student writes \theta=\cfrac{1}{2}.",
+  "error_type": "algebraic_error",
+  "valid_prefix_summary": "The \sin step is valid.",
+  "student_plan": "Simplify with \theta.",
+  "local_repair": "Replace the invalid \theta equation.",
+  "next_subgoal_after_repair": "Recompute the trig expression."
+}"""
+        )
+
+        self.assertEqual(parsed["prefix_valid_until"], r"Use \sin 3A.")
+        self.assertEqual(parsed["first_error_sentence"], r"The student writes \theta=\cfrac{1}{2}.")
+
+    def test_generator_resume_rejects_existing_old_schema_records(self):
+        module = self._load_generator_module()
+        old = dict(valid_diagnostic())
+        old["first_error_span"] = old.pop("first_error_sentence")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "first_error.jsonl"
+            output_path.write_text(
+                json.dumps({"problem_id": 179, "diagnostic": old}) + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "Invalid existing diagnostic.*first_error_sentence"):
+                module.load_completed_problem_ids(output_path)
 
     def test_common_first_error_validation_rejects_old_schema(self):
         old = dict(valid_diagnostic())

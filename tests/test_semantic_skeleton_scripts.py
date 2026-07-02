@@ -59,6 +59,41 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertEqual(skeleton["critical_intermediates"], ["2+2=4"])
         self.assertEqual(skeleton["checks"], ["box the answer"])
 
+    def test_parse_skeleton_response_repairs_latex_style_backslashes(self):
+        from eval.generate_semantic_skeletons import parse_skeleton_response
+
+        skeleton = parse_skeleton_response(
+            r'''{
+              "final_answer": "\frac{1}{2}",
+              "key_objects": [
+                {
+                  "name": "x",
+                  "constraints": ["x \geq 0", "\$2.75"]
+                }
+              ],
+              "subgoals": ["Use \left(\frac{x}{2}\right) and \pmod{5}"],
+              "critical_intermediates": ["\sqrt{x}"],
+              "theorem_tags": [],
+              "checks": []
+            }'''
+        )
+
+        self.assertEqual(skeleton["final_answer"], r"\frac{1}{2}")
+        self.assertEqual(skeleton["key_objects"][0]["constraints"], [r"x \geq 0", r"\$2.75"])
+        self.assertEqual(skeleton["subgoals"], [r"Use \left(\frac{x}{2}\right) and \pmod{5}"])
+        self.assertEqual(skeleton["critical_intermediates"], [r"\sqrt{x}"])
+
+    def test_parse_skeleton_response_accepts_json_inside_code_fence(self):
+        from eval.generate_semantic_skeletons import parse_skeleton_response
+
+        skeleton = parse_skeleton_response(
+            """```json
+{"final_answer":"4","key_objects":[],"subgoals":[],"critical_intermediates":[],"theorem_tags":[],"checks":[]}
+```"""
+        )
+
+        self.assertEqual(skeleton["final_answer"], "4")
+
     def test_generate_skeleton_record_can_use_injected_local_completion(self):
         from eval.generate_semantic_skeletons import generate_skeleton_record
 

@@ -42,6 +42,19 @@ class QuickOpsdRunScriptTests(unittest.TestCase):
         self.assertNotIn("quick_prefix_intervention.py", script)
         self.assertNotIn("prefix_summary.json", script)
 
+    def test_first_error_run_script_exposes_phase_b_resume_control(self):
+        script = Path("scripts/run_first_error_ablation.sh").read_text(encoding="utf-8")
+
+        self.assertIn('FIRST_ERROR_RESUME_ARGS=("--resume")', script)
+        self.assertIn("--first-error-resume)", script)
+        self.assertIn("--no-first-error-resume)", script)
+        self.assertIn('FIRST_ERROR_RESUME_ARGS=("--no-resume")', script)
+        self.assertIn('"${FIRST_ERROR_RESUME_ARGS[@]}"', script)
+        self.assertLess(
+            script.index("--output-file \"$OUT/first_error.jsonl\""),
+            script.index('"${FIRST_ERROR_RESUME_ARGS[@]}"'),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

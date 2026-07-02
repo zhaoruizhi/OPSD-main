@@ -28,6 +28,7 @@ HF_DEVICE_MAP="${HF_DEVICE_MAP:-cuda}"
 GPU_IDS="${GPU_IDS:-4 5 6 7}"
 FIRST_ERROR_MODEL="${FIRST_ERROR_MODEL:-DeepSeek-v4-pro}"
 FIRST_ERROR_MAX_TOKENS=8192
+FIRST_ERROR_RESUME_ARGS=("--resume")
 TOP_KL_POSITIONS=20
 FIRST_WINDOW_TOKENS=32
 NEIGHBORHOOD_BEFORE_TOKENS=32
@@ -131,6 +132,14 @@ while [[ $# -gt 0 ]]; do
     --first-error-max-tokens)
       FIRST_ERROR_MAX_TOKENS="$2"
       shift 2
+      ;;
+    --first-error-resume)
+      FIRST_ERROR_RESUME_ARGS=("--resume")
+      shift
+      ;;
+    --no-first-error-resume)
+      FIRST_ERROR_RESUME_ARGS=("--no-resume")
+      shift
       ;;
     --top-kl-positions)
       TOP_KL_POSITIONS="$2"
@@ -237,7 +246,8 @@ else
     --rollout-file "$OUT/student_rollouts.jsonl" \
     --output-file "$OUT/first_error.jsonl" \
     --model "$FIRST_ERROR_MODEL" \
-    --max-tokens "$FIRST_ERROR_MAX_TOKENS"
+    --max-tokens "$FIRST_ERROR_MAX_TOKENS" \
+    "${FIRST_ERROR_RESUME_ARGS[@]}"
 fi
 
 echo
