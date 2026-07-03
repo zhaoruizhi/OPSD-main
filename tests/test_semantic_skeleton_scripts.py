@@ -164,6 +164,28 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertEqual(len(thread_names), 3)
         self.assertGreaterEqual(len(set(thread_names)), 2)
 
+    def test_generate_skeleton_args_allow_full_split_without_manifest(self):
+        from eval.generate_semantic_skeletons import parse_args
+
+        args = parse_args(
+            [
+                "--output-file",
+                "skeletons.jsonl",
+                "--skeleton-backend",
+                "api",
+            ]
+        )
+
+        self.assertIsNone(args.sample_indices_file)
+
+    def test_resolve_generation_indices_defaults_to_full_dataset_without_manifest(self):
+        from eval.generate_semantic_skeletons import resolve_generation_indices
+
+        self.assertEqual(
+            resolve_generation_indices(row_count=4, sample_indices_file=None),
+            [0, 1, 2, 3],
+        )
+
     def test_render_skeleton_compiler_prompt_uses_system_user_messages_and_thinking_flag(self):
         from eval.generate_semantic_skeletons import SYSTEM_PROMPT, render_skeleton_compiler_prompt
 

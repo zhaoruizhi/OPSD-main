@@ -424,6 +424,21 @@ def generate_skeleton_records(
     return [build_record(index) for index in indices]
 
 
+def resolve_generation_indices(*, row_count: int, sample_indices_file: str | None) -> list[int]:
+    if sample_indices_file:
+        indices = read_sample_indices_file(sample_indices_file)
+    else:
+        indices = list(range(row_count))
+
+    invalid_indices = [index for index in indices if index < 0 or index >= row_count]
+    if invalid_indices:
+        preview = invalid_indices[:5]
+        raise ValueError(
+            f"sample indices out of range for dataset with {row_count} rows: {preview}"
+        )
+    return indices
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -435,7 +450,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate semantic skeleton JSONL from reference solutions.")
     parser.add_argument("--dataset", type=str, default="siyanzhao/Openthoughts_math_30k_opsd")
     parser.add_argument("--split", type=str, default="train")
-    parser.add_argument("--sample-indices-file", type=str, required=True)
+    parser.add_argument(
+        "--sample-indices-file",
+        type=str,
+        help="Optional sample-index manifest. If omitted, generate skeletons for every row in the split.",
+    )
     parser.add_argument("--output-file", type=str, required=True)
     parser.add_argument(
         "--skeleton-backend",
@@ -512,7 +531,10 @@ def main() -> None:
 
     dataset = load_dataset(args.dataset, split=args.split)
     rows = [dict(row) for row in dataset]
-    indices = read_sample_indices_file(args.sample_indices_file)
+    indices = resolve_generation_indices(
+        row_count=len(rows),
+        sample_indices_file=args.sample_indices_file,
+    )
     records = generate_skeleton_records(
         indices=indices,
         rows=rows,

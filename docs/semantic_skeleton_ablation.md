@@ -32,8 +32,7 @@ scripts/run_semantic_skeleton_ablation.sh
 2. Phase 1: `eval/generate_semantic_skeletons.py`
    - 输出 `$OUT/skeletons.jsonl`。
    - skeleton compiler 只看到 dataset 的 answer 和 reference solution，不看到 problem statement。
-   - 默认 `--skeleton-backend api`，走 OpenAI-compatible API。
-   - 新增 `--skeleton-backend vllm`，走本地 Qwen/vLLM 生成 skeleton。此模式下 `--skeleton-model` 通常设为同一个 Qwen3-1.7B 模型路径。
+   - 使用 `--skeleton-backend api`，走 OpenAI-compatible API。
 
 3. Phase 2: `eval/quick_rollout_openthoughts.py`
    - 用 vLLM 生成四路 rollout。
@@ -73,52 +72,49 @@ Please reason step by step, and put your final answer within \boxed{}.
 - skeleton JSON 不包含 `final_answer` 字段；ground truth 单独放在 `Final answer: ...` 行。
 - `teacher_base` 只包含 problem，不包含 privileged info。
 
-## 本次增量改动：skeleton 生成 backend 可选
+## Skeleton 生成方式
 
-原来的 skeleton 生成只支持 API backend，通常用 DeepSeek/OpenAI-compatible endpoint 生成 `$OUT/skeletons.jsonl`。这可能把外部大模型的风格、抽象偏好或解析错误引入实验。
+当前实验统一用 OpenAI-compatible API 编译 `$OUT/skeletons.jsonl`，不再用 Qwen3-1.7B 本地模型生成 skeleton。
 
-现在 Phase 1 增加了一个可选 backend：
+必需环境变量：
 
-- `--skeleton-backend api`: 默认值，行为与旧实验保持一致，需要 `SKELETON_API_KEY` 和 `SKELETON_BASE_URL`。
-- `--skeleton-backend vllm`: 使用本地 vLLM 加载 `--skeleton-model`，让 Qwen3-1.7B 自己把 reference solution 编译成 semantic skeleton。
+- `SKELETON_API_KEY`: API key。
+- `SKELETON_BASE_URL`: OpenAI-compatible endpoint，例如 `https://你的-openai-compatible-endpoint/v1`。
+- `SKELETON_MODEL`: API model name，例如 `deepseek-v4-pro`。
+- `SKELETON_API_CONCURRENCY`: API 并发数，默认可用 `8`，有速率限制时降到 `2` 或 `4`。
 
-新增参数：
+参数要点：
 
-- `--skeleton-backend {api,vllm}`: 选择 skeleton 生成方式。
-- `--skeleton-model PATH_OR_API_MODEL`: API 模式下是 API model name；vLLM 模式下是本地模型路径。vLLM 模式如果不传，脚本默认使用 `--model`。
-- `--skeleton-gpus "4"`: vLLM skeleton 生成阶段可见 GPU。默认使用 `--gpus` 的第一张卡。
-- `--skeleton-vllm-tensor-parallel-size 1`: skeleton vLLM 的 tensor parallel size。
-- `--skeleton-vllm-gpu-memory-utilization 0.75`: skeleton vLLM 显存占用比例，默认继承 `--gpu-memory-utilization`。
-- `--skeleton-vllm-max-model-len 20000`: skeleton vLLM 上下文长度，默认继承 `--max-model-len`。
-- `--skeleton-vllm-top-p 1.0`、`--skeleton-vllm-top-k -1`: skeleton 生成采样参数。
-- `--skeleton-enable-thinking`: skeleton 生成时开启 Qwen thinking。默认关闭，目的是让 JSON-only 输出更稳定。
+- `--skeleton-backend api`: 使用 API 生成 skeleton；脚本默认也是 `api`。
+- `--skeleton-model "$SKELETON_MODEL"`: API model name。
+- `--sample-indices-file`: ablation/smoke run 里用于固定 128 题小样本；全量训练数据生成时可以不传。
+- `--skeleton-file`: 只有复用已有 skeleton 时才传；如果要重新生成 skeleton，不要传这个参数。
 
-输出记录会额外保存 `skeleton_backend` 字段，方便区分 skeleton 是 API 生成还是 vLLM 自生成。
+输出记录会保存 `skeleton_backend` 字段，正式 API 路径下应为 `api`。
 
 ## 正式实验怎么跑
 
-### 推荐：Qwen/vLLM 自生成 skeleton 完整命令
+### 推荐：API 生成 skeleton 完整命令
 
-这条命令会完整跑 Phase 0-3：抽样 manifest、本地 Qwen/vLLM 生成 skeleton、四路 rollout、full-response KL/entropy probe。
+这条命令会完整跑 Phase 0-3：抽样 manifest、API 生成 skeleton、四路 rollout、full-response KL/entropy probe。
 
 ```bash
 cd /Users/zhaoruizhi/Desktop/code/OPSD-main
 
+export SKELETON_API_KEY="你的_API_KEY"
+export SKELETON_BASE_URL="https://你的-openai-compatible-endpoint/v1"
+export SKELETON_MODEL="deepseek-v4-pro"
+export SKELETON_API_CONCURRENCY=8
+
 MODEL=/data0/shared/Qwen3-1.7B \
-OUT=/data1/opsd_quick/qwen31b_skeleton_ablation_qwen_skeleton_$(date +%Y%m%d_%H%M%S) \
+OUT=/data1/opsd_quick/qwen31b_skeleton_ablation_api_skeleton_$(date +%Y%m%d_%H%M%S) \
 bash scripts/run_semantic_skeleton_ablation.sh quick \
   --model /data0/shared/Qwen3-1.7B \
   --dataset siyanzhao/Openthoughts_math_30k_opsd \
   --split train \
   --gpus "4 5 6 7" \
-  --skeleton-backend vllm \
-  --skeleton-model /data0/shared/Qwen3-1.7B \
-  --skeleton-gpus "4" \
-  --skeleton-vllm-tensor-parallel-size 1 \
-  --skeleton-vllm-gpu-memory-utilization 0.75 \
-  --skeleton-vllm-max-model-len 20000 \
-  --skeleton-vllm-top-p 1.0 \
-  --skeleton-vllm-top-k -1 \
+  --skeleton-backend api \
+  --skeleton-model "$SKELETON_MODEL" \
   --sample-size 128 \
   --val-n 4 \
   --max-new-tokens 16384 \
@@ -131,25 +127,26 @@ bash scripts/run_semantic_skeleton_ablation.sh quick \
   --seed 0
 ```
 
-如果要复用固定 128 题 sample manifest，但重新用 Qwen 自生成 skeleton，把 `--sample-indices-file` 加进去即可：
+如果要复用固定 128 题 sample manifest，但重新用 API 生成 skeleton，把 `--sample-indices-file` 加进去即可：
 
 ```bash
 cd /Users/zhaoruizhi/Desktop/code/OPSD-main
 
+export SKELETON_API_KEY="你的_API_KEY"
+export SKELETON_BASE_URL="https://你的-openai-compatible-endpoint/v1"
+export SKELETON_MODEL="deepseek-v4-pro"
+export SKELETON_API_CONCURRENCY=8
+
 MODEL=/data0/shared/Qwen3-1.7B \
-OUT=/data1/opsd_quick/qwen31b_skeleton_ablation_qwen_skeleton_reuse_$(date +%Y%m%d_%H%M%S) \
+OUT=/data1/opsd_quick/qwen31b_skeleton_ablation_api_skeleton_reuse_$(date +%Y%m%d_%H%M%S) \
 bash scripts/run_semantic_skeleton_ablation.sh quick \
   --model /data0/shared/Qwen3-1.7B \
   --dataset siyanzhao/Openthoughts_math_30k_opsd \
   --split train \
   --gpus "4 5 6 7" \
   --sample-indices-file /path/to/sample_indices.json \
-  --skeleton-backend vllm \
-  --skeleton-model /data0/shared/Qwen3-1.7B \
-  --skeleton-gpus "4" \
-  --skeleton-vllm-tensor-parallel-size 1 \
-  --skeleton-vllm-gpu-memory-utilization 0.75 \
-  --skeleton-vllm-max-model-len 20000 \
+  --skeleton-backend api \
+  --skeleton-model "$SKELETON_MODEL" \
   --sample-size 128 \
   --val-n 4 \
   --max-new-tokens 16384 \
@@ -164,17 +161,7 @@ bash scripts/run_semantic_skeleton_ablation.sh quick \
 
 注意这里不要传 `--skeleton-file`，因为本实验目标正是重新生成 skeleton。只有在复用旧 skeleton 时才传 `--skeleton-file`。
 
-### 旧路径：API 生成或复用 skeleton
-
-准备 API 环境变量：
-
-```bash
-export SKELETON_API_KEY="你的_API_KEY"
-export SKELETON_BASE_URL="https://你的-openai-compatible-endpoint/v1"
-export SKELETON_MODEL="deepseek-v4-pro"
-```
-
-主实验示例：
+### 复用已有 skeleton
 
 ```bash
 MODEL=/home/ruizzhao/OPSD-main/models/Qwen3-1.7B \
@@ -198,9 +185,8 @@ bash scripts/run_semantic_skeleton_ablation.sh quick \
 参数要点：
 
 - `--gpus "4 5 6 7"`: 指定本次实验使用哪几张物理 GPU；默认也是 `4 5 6 7`。例如只用两张卡可以传 `--gpus "5 7"`。
-- `--skeleton-backend vllm`: 使用本地 Qwen/vLLM 自生成 skeleton；不传则默认走 API backend。
-- `--skeleton-gpus "4"`: 只影响 Phase 1 skeleton vLLM 生成。Phase 2/3 仍由 `--gpus` 控制。
-- `--skeleton-model /data0/shared/Qwen3-1.7B`: vLLM skeleton compiler 使用的模型路径。
+- `--skeleton-backend api`: 使用 OpenAI-compatible API 生成 skeleton；不传则默认是 API backend。
+- `--skeleton-model "$SKELETON_MODEL"`: API model name。
 - `--val-n 4`: 每题每个 condition 采样 4 个 rollout，用于 pass@4。
 - `--max-new-tokens`: rollout 最大生成长度。
 - `--max-model-len`: vLLM rollout 和 HF logit probe 的上下文上限。
@@ -226,7 +212,7 @@ bash scripts/run_semantic_skeleton_ablation.sh quick \
 RuntimeError: semantic skeleton generation failed for N examples
 ```
 
-并且 `$OUT/skeletons.jsonl` 里失败记录的 `error` 是 `Invalid \escape`，通常说明 vLLM 本地模型已经成功加载并完成生成，但输出的 JSON 字符串里包含未转义的 LaTeX 反斜杠，例如 `\left`、`\frac`、`\pmod`、`\geq` 或 `\$`。这类输出人眼看接近 JSON，但严格 `json.loads` 会拒绝。当前代码已对 skeleton 解析增加容错：会剥离可选的 ```json code fence，并修复 JSON 字符串中的 LaTeX 风格单反斜杠；prompt 里也额外要求本地模型尽量使用 plain text 或对反斜杠做 JSON 转义。遇到旧版本生成的失败文件时，建议更新代码后重新跑 Phase 1，或者把已有 `raw_response` 重新解析后生成一份修复后的 `skeletons.jsonl`。
+并且 `$OUT/skeletons.jsonl` 里失败记录的 `error` 是 `Invalid \escape`，通常说明 API 已经返回内容，但输出的 JSON 字符串里包含未转义的 LaTeX 反斜杠，例如 `\left`、`\frac`、`\pmod`、`\geq` 或 `\$`。这类输出人眼看接近 JSON，但严格 `json.loads` 会拒绝。当前代码已对 skeleton 解析增加容错：会剥离可选的 ```json code fence，并修复 JSON 字符串中的 LaTeX 风格单反斜杠；prompt 里也额外要求 API 尽量使用 plain text 或对反斜杠做 JSON 转义。遇到旧版本生成的失败文件时，建议更新代码后重新跑 Phase 1，或者把已有 `raw_response` 重新解析后生成一份修复后的 `skeletons.jsonl`。
 
 当前默认会保留完整产物，不会跳过 rollout entropy。正常跑完后至少应有：
 
@@ -283,21 +269,23 @@ RuntimeError: semantic skeleton generation failed for N examples
 
 ## 快速 smoke test
 
-Qwen/vLLM 自生成 skeleton 的 smoke test：
+API 生成 skeleton 的 smoke test：
 
 ```bash
 cd /Users/zhaoruizhi/Desktop/code/OPSD-main
 
+export SKELETON_API_KEY="你的_API_KEY"
+export SKELETON_BASE_URL="https://你的-openai-compatible-endpoint/v1"
+export SKELETON_MODEL="deepseek-v4-pro"
+export SKELETON_API_CONCURRENCY=8
+
 MODEL=/data0/shared/Qwen3-1.7B \
-OUT=/data1/opsd_quick/smoke_skeleton_ablation_qwen_skeleton_$(date +%Y%m%d_%H%M%S) \
+OUT=/data1/opsd_quick/smoke_skeleton_ablation_api_skeleton_$(date +%Y%m%d_%H%M%S) \
 bash scripts/run_semantic_skeleton_ablation.sh smoke \
   --model /data0/shared/Qwen3-1.7B \
   --gpus "4" \
-  --skeleton-backend vllm \
-  --skeleton-model /data0/shared/Qwen3-1.7B \
-  --skeleton-gpus "4" \
-  --skeleton-vllm-tensor-parallel-size 1 \
-  --skeleton-vllm-gpu-memory-utilization 0.75 \
+  --skeleton-backend api \
+  --skeleton-model "$SKELETON_MODEL" \
   --sample-size 8 \
   --val-n 1 \
   --max-new-tokens 1024 \
@@ -310,7 +298,7 @@ bash scripts/run_semantic_skeleton_ablation.sh smoke \
   --seed 0
 ```
 
-旧 API/复用 skeleton 路径的 smoke test：
+复用已有 skeleton 的 smoke test：
 
 ```bash
 MODEL=/home/ruizzhao/OPSD-main/models/Qwen3-1.7B \
@@ -334,5 +322,4 @@ bash scripts/run_semantic_skeleton_ablation.sh smoke \
 - Phase 3 使用 HF model probe；新 rollout 产物会直接使用 `prompt_token_ids` 和 `completion_token_ids`，旧产物缺少 token ids 时才从文本重新 tokenize。
 - Phase 3 当前是 HF probe，启动参数以 `python eval/quick_logit_probe.py --help` 为准。
 - 如果复用旧 128 题，manifest 里的 `indices` 应该固定不变，不建议每次重新抽样。
-- 如果比较 DeepSeek skeleton 与 Qwen 自生成 skeleton，除了 `--skeleton-backend/--skeleton-model` 之外，尽量保持 sample manifest、rollout 参数、KL probe 参数完全一致。
 - 如果只想临时加速检查 Phase 3，可以显式传 `--skip-rollout-entropy`，但正式对齐旧产物时不要传这个参数。
