@@ -8,3 +8,8 @@ models/
 *.pt
 *.pth
 .env
+models/
+data/
+hf_cache/
+outputs/
+.cache/
