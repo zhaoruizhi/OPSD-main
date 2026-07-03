@@ -1,4 +1,11 @@
+import json
+
 import torch
+
+from opsd_skeleton import normalize_semantic_skeleton
+
+
+TEACHER_CONTEXT_MODES = {"reference", "skeleton"}
 
 
 class SelfDistillationDataCollator:
@@ -19,12 +26,22 @@ class SelfDistillationDataCollator:
         reason_first=True,
         student_thinking=False,
         teacher_thinking=True,
+        teacher_context_mode="reference",
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.reason_first = reason_first
         self.student_thinking = student_thinking
         self.teacher_thinking = teacher_thinking
+        self.teacher_context_mode = teacher_context_mode
+
+        if self.teacher_context_mode not in TEACHER_CONTEXT_MODES:
+            raise ValueError(
+                f"teacher_context_mode must be one of {sorted(TEACHER_CONTEXT_MODES)}, "
+                f"got {self.teacher_context_mode!r}"
+            )
+        if self.reason_first and self.teacher_context_mode != "reference":
+            raise ValueError("reason_first currently supports only reference teacher context mode")
 
         # Prompt for reasoning about the solution before teaching
         self.reason_first_prompt = (
@@ -47,6 +64,7 @@ class SelfDistillationDataCollator:
         self.tokenizer.padding_side = "right"
         print(f"[DataCollator] Set padding_side to: {self.tokenizer.padding_side}")
         print(f"[DataCollator] Reason first mode: {self.reason_first}")
+        print(f"[DataCollator] Teacher context mode: {self.teacher_context_mode}")
 
     def __call__(self, features):
 
@@ -93,14 +111,7 @@ class SelfDistillationDataCollator:
                 # For now, create placeholder (will be replaced in training_step)
                 teacher_prompts.append("")  # Placeholder
             else:
-                # Original teacher prompt (unchanged)
-                teacher_user_message = (
-                    f"Problem: {problem}\n\n"
-                    f"Here is a reference solution to this problem:\n"
-                    f"=== Reference Solution Begin ===\n{solution}\n=== Reference Solution End ===\n"
-                    f"{self.transition_prompt}\n"
-                    f"Please reason step by step, and put your final answer within \\boxed{{}}."
-                )
+                teacher_user_message = self.build_teacher_user_message(feature, problem, solution)
                 teacher_messages = [{"role": "user", "content": teacher_user_message}]
 
                 # Apply chat template for teacher
@@ -204,3 +215,49 @@ class SelfDistillationDataCollator:
             )
 
         return result
+
+    def build_teacher_user_message(self, feature, problem, solution):
+        if self.teacher_context_mode == "reference":
+            return self.build_reference_teacher_user_message(problem, solution)
+        if self.teacher_context_mode == "skeleton":
+            return self.build_skeleton_teacher_user_message(feature, problem)
+        raise ValueError(f"Unknown teacher_context_mode: {self.teacher_context_mode}")
+
+    def build_reference_teacher_user_message(self, problem, solution):
+        return (
+            f"Problem: {problem}\n\n"
+            f"Here is a reference solution to this problem:\n"
+            f"=== Reference Solution Begin ===\n{solution}\n=== Reference Solution End ===\n"
+            f"{self.transition_prompt}\n"
+            f"Please reason step by step, and put your final answer within \\boxed{{}}."
+        )
+
+    def build_skeleton_teacher_user_message(self, feature, problem):
+        skeleton = feature.get("semantic_skeleton")
+        if skeleton is None:
+            raise ValueError("semantic_skeleton is required when teacher_context_mode='skeleton'")
+
+        normalized_skeleton = normalize_semantic_skeleton(skeleton)
+        ground_truth = feature.get("ground_truth")
+        if ground_truth in (None, ""):
+            ground_truth = normalized_skeleton.get("final_answer")
+
+        skeleton_without_answer = {
+            key: value for key, value in normalized_skeleton.items() if key != "final_answer"
+        }
+        skeleton_json = json.dumps(
+            skeleton_without_answer,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        ground_truth_line = f"Final answer: {ground_truth}\n\n" if ground_truth not in (None, "") else ""
+
+        return (
+            f"Problem: {problem}\n\n"
+            f"{ground_truth_line}"
+            f"Here is a reference solution to this problem:\n"
+            f"=== Reference Solution Begin ===\n{skeleton_json}\n=== Reference Solution End ===\n"
+            f"{self.transition_prompt}\n"
+            f"Please reason step by step, and put your final answer within \\boxed{{}}."
+        )

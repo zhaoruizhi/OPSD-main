@@ -1,7 +1,10 @@
 import os
+from dataclasses import dataclass, field
+from typing import Optional
+
 import wandb
 
-from datasets import load_dataset
+from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer, GenerationConfig
 
 from trl import (
@@ -15,7 +18,7 @@ from trl import (
 )
 from trl.experimental.gold import GOLDConfig
 from opsd_trainer import OPSDTrainer
-from dataclasses import dataclass, field
+from opsd_skeleton import attach_skeletons_to_training_rows
 
 # Enable logging in a Hugging Face Space
 os.environ.setdefault("TRACKIO_SPACE_ID", "trl-trackio")
@@ -106,6 +109,28 @@ class CustomScriptArguments(ScriptArguments):
             "Default True. Set to False for the matched non-thinking ablation (both nonthink)."
         },
     )
+    teacher_context_mode: str = field(
+        default="reference",
+        metadata={
+            "help": "Privileged teacher context to use during OPSD training.",
+            "choices": ["reference", "skeleton"],
+        },
+    )
+    skeleton_file: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Path to a skeletons.jsonl file keyed by dataset row index as problem_id. "
+            "Required when teacher_context_mode='skeleton'."
+        },
+    )
+    skeleton_subset_policy: str = field(
+        default="error",
+        metadata={
+            "help": "How to handle rows missing from skeleton_file in skeleton mode. "
+            "'error' requires full train coverage; 'filter' keeps only rows with skeletons for smoke runs.",
+            "choices": ["error", "filter"],
+        },
+    )
 
 
 if __name__ == "__main__":
@@ -166,6 +191,10 @@ if __name__ == "__main__":
         raise ValueError(
             "fixed_teacher=True requires use_peft=True. As the fixed teacher is implemented by disabling LoRA adapters."
         )
+    if script_args.teacher_context_mode == "skeleton" and not script_args.skeleton_file:
+        raise ValueError("teacher_context_mode='skeleton' requires --skeleton_file")
+    if script_args.reason_first and script_args.teacher_context_mode != "reference":
+        raise ValueError("reason_first currently supports only teacher_context_mode='reference'")
 
     # Only initialize wandb on main process (LOCAL_RANK 0 or not set)
     if os.environ.get("LOCAL_RANK", "0") == "0":
@@ -195,6 +224,13 @@ if __name__ == "__main__":
                 "top_k_loss": script_args.top_k_loss if script_args.top_k_loss > 0 else None,
                 "use_ema_teacher": script_args.use_ema_teacher,
                 "ema_decay": script_args.ema_decay if script_args.use_ema_teacher else None,
+                "teacher_context_mode": script_args.teacher_context_mode,
+                "skeleton_file": script_args.skeleton_file,
+                "skeleton_subset_policy": (
+                    script_args.skeleton_subset_policy
+                    if script_args.teacher_context_mode == "skeleton"
+                    else None
+                ),
             },
         )
 
@@ -265,6 +301,20 @@ if __name__ == "__main__":
 
     dataset = load_dataset("siyanzhao/Openthoughts_math_30k_opsd")
     train_dataset = dataset["train"]
+    if script_args.teacher_context_mode == "skeleton":
+        original_len = len(train_dataset)
+        skeleton_rows = attach_skeletons_to_training_rows(
+            [dict(row) for row in train_dataset],
+            script_args.skeleton_file,
+            subset_policy=script_args.skeleton_subset_policy,
+        )
+        train_dataset = Dataset.from_list(skeleton_rows)
+        print(f"\n{'='*80}")
+        print("SKELETON TEACHER CONTEXT ENABLED")
+        print(f"Skeleton file: {script_args.skeleton_file}")
+        print(f"Skeleton subset policy: {script_args.skeleton_subset_policy}")
+        print(f"Training rows: {len(train_dataset)} / {original_len}")
+        print(f"{'='*80}\n")
 
     trainer = OPSDTrainer(
         model=model_args.model_name_or_path,
@@ -282,6 +332,7 @@ if __name__ == "__main__":
         ema_decay=script_args.ema_decay,
         student_thinking=script_args.student_thinking,
         teacher_thinking=script_args.teacher_thinking,
+        teacher_context_mode=script_args.teacher_context_mode,
     )
 
     if training_args.eval_strategy != "no":

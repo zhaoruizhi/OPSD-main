@@ -144,6 +144,7 @@ class OPSDTrainer(SFTTrainer):
         ema_decay: float = 0.999,
         student_thinking: bool = False,
         teacher_thinking: bool = True,
+        teacher_context_mode: str = "reference",
     ):
         self.model_name_or_path = model if isinstance(model, str) else model.config._name_or_path
         self.model_revision = getattr(args, "student_model_revision", None)
@@ -159,6 +160,7 @@ class OPSDTrainer(SFTTrainer):
                 reason_first=reason_first,
                 student_thinking=student_thinking,
                 teacher_thinking=teacher_thinking,
+                teacher_context_mode=teacher_context_mode,
             )
 
         super().__init__(
@@ -186,6 +188,7 @@ class OPSDTrainer(SFTTrainer):
         self.use_thinking_machines_loss = use_thinking_machines_loss
         self.fixed_teacher = fixed_teacher
         self.reason_first = reason_first
+        self.teacher_context_mode = teacher_context_mode
         self.top_k_loss = top_k_loss
         self.jsd_token_clip = jsd_token_clip
         self.use_ema_teacher = use_ema_teacher
@@ -370,6 +373,8 @@ class OPSDTrainer(SFTTrainer):
         required_columns = [
             "problem",
             "solution",
+            "semantic_skeleton",
+            "ground_truth",
         ]
         if self._signature_columns is None:
             self._signature_columns = required_columns
