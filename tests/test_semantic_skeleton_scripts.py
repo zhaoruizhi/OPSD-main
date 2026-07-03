@@ -234,7 +234,7 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
             self.assertEqual(existing_ids, {0, 2})
             self.assertEqual(filter_missing_indices([0, 1, 2, 3], existing_ids), [1, 3])
 
-    def test_resume_helpers_retry_existing_error_records(self):
+    def test_resume_helpers_treat_existing_error_records_as_visited(self):
         from eval.generate_semantic_skeletons import filter_missing_indices, load_existing_problem_ids
         from pathlib import Path
         import tempfile
@@ -248,8 +248,25 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
             )
 
             existing_ids = load_existing_problem_ids(output_path)
-            self.assertEqual(existing_ids, {0})
-            self.assertEqual(filter_missing_indices([0, 1, 2], existing_ids), [1, 2])
+            self.assertEqual(existing_ids, {0, 1})
+            self.assertEqual(filter_missing_indices([0, 1, 2], existing_ids), [2])
+
+    def test_resume_helpers_continue_after_existing_error_holes(self):
+        from eval.generate_semantic_skeletons import filter_missing_indices, load_existing_problem_ids
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "skeletons.jsonl"
+            output_path.write_text(
+                '{"problem_id": 0, "status": "ok"}\n'
+                '{"problem_id": 1, "status": "error", "error": "API read timed out"}\n'
+                '{"problem_id": 2, "status": "ok"}\n',
+                encoding="utf-8",
+            )
+
+            existing_ids = load_existing_problem_ids(output_path)
+            self.assertEqual(filter_missing_indices([0, 1, 2, 3, 4], existing_ids), [3, 4])
 
     def test_generate_skeleton_args_allow_full_split_without_manifest(self):
         from eval.generate_semantic_skeletons import parse_args

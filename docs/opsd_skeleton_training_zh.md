@@ -160,7 +160,7 @@ python eval/generate_semantic_skeletons.py \
   --max-tokens 2048
 ```
 
-脚本默认会 resume：同一个 `--output-file` 已经成功写入的 `ok` 记录会跳过，失败或中断后缺失的样本会继续生成。
+脚本默认会 resume：同一个 `--output-file` 已经写入过的 `problem_id` 会跳过，包括 `status=error` 的记录。这样中断后会继续往后生成，不会回到前面的失败样本补洞。全量跑完后再单独检查并处理 `status=error` 的记录。
 
 ### 3. 检查 skeleton 数量
 

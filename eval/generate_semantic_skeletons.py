@@ -544,9 +544,6 @@ def load_existing_problem_ids(path: str | Path) -> set[int]:
                 record = json.loads(stripped)
             except json.JSONDecodeError:
                 continue
-            status = str(record.get("status", "ok")).lower()
-            if status not in {"ok", "success"}:
-                continue
             problem_id = record.get("problem_id")
             if isinstance(problem_id, int):
                 existing_ids.add(problem_id)
