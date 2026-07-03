@@ -141,6 +141,27 @@ python eval/generate_semantic_skeletons.py \
 
 API backend 会用线程池并发请求，`SKELETON_API_CONCURRENCY` 就是并发数；如果你的 API 有速率限制，可以先把它降到 2 或 4。
 
+如果长跑过程中在 `ssl.py` / `http.client.py` 附近报 read timeout、connection reset 或 HTTPS 连接中断，通常是 API endpoint 在高并发下限流、排队或断开连接，不是 dataset 行本身坏了。建议先把并发从 100 降到 8、16 或 32，并提高重试次数：
+
+```bash
+export SKELETON_API_CONCURRENCY=16
+export SKELETON_FLUSH_EVERY=10
+
+python eval/generate_semantic_skeletons.py \
+  --dataset siyanzhao/Openthoughts_math_30k_opsd \
+  --split train \
+  --output-file "$FULL_SKEL_OUT/skeletons.jsonl" \
+  --skeleton-backend api \
+  --skeleton-model "$SKELETON_MODEL" \
+  --api-concurrency "$SKELETON_API_CONCURRENCY" \
+  --flush-every "$SKELETON_FLUSH_EVERY" \
+  --timeout 300 \
+  --max-retries 5 \
+  --max-tokens 2048
+```
+
+脚本默认会 resume：同一个 `--output-file` 已经成功写入的 `ok` 记录会跳过，失败或中断后缺失的样本会继续生成。
+
 ### 3. 检查 skeleton 数量
 
 ```bash

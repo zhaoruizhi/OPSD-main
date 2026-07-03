@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import http.client
 import json
 import os
+import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -30,6 +33,20 @@ except ImportError:  # pragma: no cover
         read_sample_indices_file,
         write_jsonl,
     )
+
+
+SKELETON_GENERATION_ERRORS = (
+    json.JSONDecodeError,
+    KeyError,
+    ValueError,
+    RuntimeError,
+    urllib.error.URLError,
+    http.client.HTTPException,
+    TimeoutError,
+    socket.timeout,
+    ssl.SSLError,
+    OSError,
+)
 
 
 SYSTEM_PROMPT = """You are a mathematical semantic-skeleton compiler.
@@ -372,7 +389,7 @@ def generate_skeleton_record(
                 "skeleton_backend": skeleton_backend,
                 "status": "ok",
             }
-        except (json.JSONDecodeError, KeyError, ValueError, RuntimeError, urllib.error.URLError) as exc:
+        except SKELETON_GENERATION_ERRORS as exc:
             last_error = str(exc)
             if attempt < max_retries:
                 time.sleep(min(2**attempt, 8))
@@ -526,6 +543,9 @@ def load_existing_problem_ids(path: str | Path) -> set[int]:
             try:
                 record = json.loads(stripped)
             except json.JSONDecodeError:
+                continue
+            status = str(record.get("status", "ok")).lower()
+            if status not in {"ok", "success"}:
                 continue
             problem_id = record.get("problem_id")
             if isinstance(problem_id, int):

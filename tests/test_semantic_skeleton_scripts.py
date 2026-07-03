@@ -126,6 +126,35 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertEqual(record["skeleton"]["subgoals"], ["establish the sum"])
         self.assertEqual(calls, [{"answer": "4", "reference_solution": "Compute 2+2 and conclude."}])
 
+    def test_generate_skeleton_record_converts_network_timeout_to_error_record(self):
+        from eval.generate_semantic_skeletons import generate_skeleton_record
+
+        calls = 0
+
+        def timeout_completion(*, answer, reference_solution):
+            nonlocal calls
+            calls += 1
+            raise TimeoutError("API read timed out")
+
+        record = generate_skeleton_record(
+            problem_id=12,
+            example={"answer": "4", "solution": "Compute 2+2 and conclude."},
+            api_key=None,
+            base_url=None,
+            model="deepseek-v4-pro",
+            temperature=0.0,
+            max_tokens=128,
+            timeout=1.0,
+            max_retries=1,
+            skeleton_backend="api",
+            completion_fn=timeout_completion,
+        )
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(record["status"], "error")
+        self.assertEqual(record["problem_id"], 12)
+        self.assertIn("API read timed out", record["error"])
+
     def test_generate_skeleton_records_can_parallelize_api_calls_and_keep_order(self):
         from eval.generate_semantic_skeletons import generate_skeleton_records
         import threading
@@ -204,6 +233,23 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
             existing_ids = load_existing_problem_ids(output_path)
             self.assertEqual(existing_ids, {0, 2})
             self.assertEqual(filter_missing_indices([0, 1, 2, 3], existing_ids), [1, 3])
+
+    def test_resume_helpers_retry_existing_error_records(self):
+        from eval.generate_semantic_skeletons import filter_missing_indices, load_existing_problem_ids
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "skeletons.jsonl"
+            output_path.write_text(
+                '{"problem_id": 0, "status": "ok"}\n'
+                '{"problem_id": 1, "status": "error", "error": "API read timed out"}\n',
+                encoding="utf-8",
+            )
+
+            existing_ids = load_existing_problem_ids(output_path)
+            self.assertEqual(existing_ids, {0})
+            self.assertEqual(filter_missing_indices([0, 1, 2], existing_ids), [1, 2])
 
     def test_generate_skeleton_args_allow_full_split_without_manifest(self):
         from eval.generate_semantic_skeletons import parse_args
