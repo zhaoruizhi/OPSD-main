@@ -164,6 +164,47 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertEqual(len(thread_names), 3)
         self.assertGreaterEqual(len(set(thread_names)), 2)
 
+    def test_write_jsonl_stream_writes_incrementally(self):
+        from eval.generate_semantic_skeletons import write_jsonl_stream
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "skeletons.jsonl"
+            records = (
+                {"problem_id": index, "status": "ok"}
+                for index in range(3)
+            )
+
+            write_jsonl_stream(output_path, records, flush_every=2)
+
+            self.assertTrue(output_path.exists())
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                '{"problem_id": 0, "status": "ok"}\n'
+                '{"problem_id": 1, "status": "ok"}\n'
+                '{"problem_id": 2, "status": "ok"}\n',
+            )
+
+    def test_resume_helpers_skip_existing_problem_ids(self):
+        from eval.generate_semantic_skeletons import filter_missing_indices, load_existing_problem_ids
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "skeletons.jsonl"
+            output_path.write_text(
+                '{"problem_id": 0, "status": "ok"}\n'
+                '{"problem_id": 2, "status": "ok"}\n'
+                '{"problem_id": "bad"}\n'
+                'not-json\n',
+                encoding="utf-8",
+            )
+
+            existing_ids = load_existing_problem_ids(output_path)
+            self.assertEqual(existing_ids, {0, 2})
+            self.assertEqual(filter_missing_indices([0, 1, 2, 3], existing_ids), [1, 3])
+
     def test_generate_skeleton_args_allow_full_split_without_manifest(self):
         from eval.generate_semantic_skeletons import parse_args
 

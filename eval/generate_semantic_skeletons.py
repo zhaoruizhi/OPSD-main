@@ -10,7 +10,9 @@ import os
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Sequence
+import sys
+from pathlib import Path
+from typing import Any, Callable, Iterable, Sequence
 
 try:
     from .quick_opsd_common import (
@@ -402,6 +404,8 @@ def generate_skeleton_records(
     completion_fn: Callable[..., str] | None = None,
     api_concurrency: int = 1,
 ) -> list[dict[str, Any]]:
+    total = len(indices)
+
     def build_record(index: int) -> dict[str, Any]:
         return generate_skeleton_record(
             problem_id=index,
@@ -417,11 +421,120 @@ def generate_skeleton_records(
             completion_fn=completion_fn,
         )
 
+    print(
+        f"Generating {total} skeletons with backend={skeleton_backend} concurrency={api_concurrency}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    if skeleton_backend == "api" and api_concurrency > 1:
+        records: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=api_concurrency) as executor:
+            for position, record in enumerate(executor.map(build_record, indices), start=1):
+                records.append(record)
+                if position == 1 or position == total or position % 10 == 0:
+                    print(f"Completed {position}/{total} skeletons", file=sys.stderr, flush=True)
+        return records
+
+    records = []
+    for position, index in enumerate(indices, start=1):
+        records.append(build_record(index))
+        if position == 1 or position == total or position % 10 == 0:
+            print(f"Completed {position}/{total} skeletons", file=sys.stderr, flush=True)
+    return records
+
+
+def iter_skeleton_records(
+    *,
+    indices: Sequence[int],
+    rows: list[dict[str, Any]],
+    api_key: str | None,
+    base_url: str | None,
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    timeout: float,
+    max_retries: int,
+    skeleton_backend: str = "api",
+    completion_fn: Callable[..., str] | None = None,
+    api_concurrency: int = 1,
+) -> Iterable[dict[str, Any]]:
+    total = len(indices)
+
+    def build_record(index: int) -> dict[str, Any]:
+        return generate_skeleton_record(
+            problem_id=index,
+            example=rows[index],
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            max_retries=max_retries,
+            skeleton_backend=skeleton_backend,
+            completion_fn=completion_fn,
+        )
+
+    print(
+        f"Generating {total} skeletons with backend={skeleton_backend} concurrency={api_concurrency}",
+        file=sys.stderr,
+        flush=True,
+    )
+
     if skeleton_backend == "api" and api_concurrency > 1:
         with ThreadPoolExecutor(max_workers=api_concurrency) as executor:
-            return list(executor.map(build_record, indices))
+            for position, record in enumerate(executor.map(build_record, indices), start=1):
+                if position == 1 or position == total or position % 10 == 0:
+                    print(f"Completed {position}/{total} skeletons", file=sys.stderr, flush=True)
+                yield record
+        return
 
-    return [build_record(index) for index in indices]
+    for position, index in enumerate(indices, start=1):
+        record = build_record(index)
+        if position == 1 or position == total or position % 10 == 0:
+            print(f"Completed {position}/{total} skeletons", file=sys.stderr, flush=True)
+        yield record
+
+
+def write_jsonl_stream(path: str | Path, records: Iterable[dict[str, Any]], *, flush_every: int = 10) -> None:
+    if flush_every <= 0:
+        raise ValueError("flush_every must be positive")
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w", encoding="utf-8") as handle:
+        for position, record in enumerate(records, start=1):
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if position % flush_every == 0:
+                handle.flush()
+        handle.flush()
+
+
+def load_existing_problem_ids(path: str | Path) -> set[int]:
+    existing_ids: set[int] = set()
+    output_path = Path(path)
+    if not output_path.exists():
+        return existing_ids
+
+    with output_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                record = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            problem_id = record.get("problem_id")
+            if isinstance(problem_id, int):
+                existing_ids.add(problem_id)
+    return existing_ids
+
+
+def filter_missing_indices(indices: Sequence[int], existing_problem_ids: set[int]) -> list[int]:
+    return [index for index in indices if index not in existing_problem_ids]
 
 
 def resolve_generation_indices(*, row_count: int, sample_indices_file: str | None) -> list[int]:
@@ -476,6 +589,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Parallel API request count used only when --skeleton-backend api.",
     )
     parser.add_argument(
+        "--flush-every",
+        type=int,
+        default=int(os.environ.get("SKELETON_FLUSH_EVERY", "10")),
+        help="Flush JSONL output after every N records so interrupted runs preserve progress.",
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Start from scratch and overwrite any existing output file instead of resuming.",
+    )
+    parser.add_argument(
         "--vllm-tensor-parallel-size",
         type=int,
         default=int(
@@ -508,6 +632,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.flush_every <= 0:
+        raise ValueError("--flush-every must be positive")
     completion_fn: Callable[..., str] | None = None
     if args.skeleton_backend == "api":
         if not args.api_key:
@@ -529,14 +655,38 @@ def main() -> None:
 
     from datasets import load_dataset
 
+    print(
+        f"Loading dataset {args.dataset}:{args.split}...",
+        file=sys.stderr,
+        flush=True,
+    )
     dataset = load_dataset(args.dataset, split=args.split)
     rows = [dict(row) for row in dataset]
     indices = resolve_generation_indices(
         row_count=len(rows),
         sample_indices_file=args.sample_indices_file,
     )
-    records = generate_skeleton_records(
-        indices=indices,
+    print(
+        f"Loaded {len(rows)} rows; generating {len(indices)} indices",
+        file=sys.stderr,
+        flush=True,
+    )
+    resume = not args.no_resume
+    existing_problem_ids = load_existing_problem_ids(args.output_file) if resume else set()
+    if existing_problem_ids:
+        print(
+            f"Resuming from {len(existing_problem_ids)} existing records in {args.output_file}",
+            file=sys.stderr,
+            flush=True,
+        )
+    remaining_indices = filter_missing_indices(indices, existing_problem_ids)
+    if not remaining_indices:
+        print("All requested skeletons already exist; nothing to do.", file=sys.stderr, flush=True)
+        return
+
+    failures: list[dict[str, Any]] = []
+    records = iter_skeleton_records(
+        indices=remaining_indices,
         rows=rows,
         api_key=args.api_key,
         base_url=args.base_url,
@@ -549,9 +699,18 @@ def main() -> None:
         completion_fn=completion_fn,
         api_concurrency=args.api_concurrency,
     )
-    write_jsonl(args.output_file, records)
+    output_path = Path(args.output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    open_mode = "a" if resume and output_path.exists() else "w"
+    with output_path.open(open_mode, encoding="utf-8") as handle:
+        for position, record in enumerate(records, start=1):
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if position % args.flush_every == 0:
+                handle.flush()
+            if record.get("status") != "ok":
+                failures.append(record)
+        handle.flush()
 
-    failures = [record for record in records if record.get("status") != "ok"]
     if failures:
         raise RuntimeError(f"semantic skeleton generation failed for {len(failures)} examples")
 
