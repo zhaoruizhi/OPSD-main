@@ -126,6 +126,44 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertEqual(record["skeleton"]["subgoals"], ["establish the sum"])
         self.assertEqual(calls, [{"answer": "4", "reference_solution": "Compute 2+2 and conclude."}])
 
+    def test_generate_skeleton_records_can_parallelize_api_calls_and_keep_order(self):
+        from eval.generate_semantic_skeletons import generate_skeleton_records
+        import threading
+        import time
+
+        thread_names = []
+
+        def local_completion(*, answer, reference_solution):
+            thread_names.append(threading.current_thread().name)
+            time.sleep(0.05)
+            return (
+                '{"final_answer":"4","key_objects":[],"subgoals":["establish the sum"],'
+                '"critical_intermediates":["2+2=4"],"theorem_tags":[],"checks":[]}'
+            )
+
+        records = generate_skeleton_records(
+            indices=[0, 1, 2],
+            rows=[
+                {"answer": "4", "solution": "Compute 2+2 and conclude."},
+                {"answer": "4", "solution": "Compute 2+2 and conclude."},
+                {"answer": "4", "solution": "Compute 2+2 and conclude."},
+            ],
+            api_key=None,
+            base_url=None,
+            model="/data0/shared/Qwen3-1.7B",
+            temperature=0.0,
+            max_tokens=128,
+            timeout=1.0,
+            max_retries=0,
+            skeleton_backend="api",
+            completion_fn=local_completion,
+            api_concurrency=2,
+        )
+
+        self.assertEqual([record["problem_id"] for record in records], [0, 1, 2])
+        self.assertEqual(len(thread_names), 3)
+        self.assertGreaterEqual(len(set(thread_names)), 2)
+
     def test_render_skeleton_compiler_prompt_uses_system_user_messages_and_thinking_flag(self):
         from eval.generate_semantic_skeletons import SYSTEM_PROMPT, render_skeleton_compiler_prompt
 

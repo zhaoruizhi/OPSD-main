@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import time
@@ -386,6 +387,43 @@ def generate_skeleton_record(
     }
 
 
+def generate_skeleton_records(
+    *,
+    indices: Sequence[int],
+    rows: list[dict[str, Any]],
+    api_key: str | None,
+    base_url: str | None,
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    timeout: float,
+    max_retries: int,
+    skeleton_backend: str = "api",
+    completion_fn: Callable[..., str] | None = None,
+    api_concurrency: int = 1,
+) -> list[dict[str, Any]]:
+    def build_record(index: int) -> dict[str, Any]:
+        return generate_skeleton_record(
+            problem_id=index,
+            example=rows[index],
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            max_retries=max_retries,
+            skeleton_backend=skeleton_backend,
+            completion_fn=completion_fn,
+        )
+
+    if skeleton_backend == "api" and api_concurrency > 1:
+        with ThreadPoolExecutor(max_workers=api_concurrency) as executor:
+            return list(executor.map(build_record, indices))
+
+    return [build_record(index) for index in indices]
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -412,6 +450,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--max-retries", type=int, default=2)
+    parser.add_argument(
+        "--api-concurrency",
+        type=int,
+        default=int(os.environ.get("SKELETON_API_CONCURRENCY", "1")),
+        help="Parallel API request count used only when --skeleton-backend api.",
+    )
     parser.add_argument(
         "--vllm-tensor-parallel-size",
         type=int,
@@ -469,22 +513,20 @@ def main() -> None:
     dataset = load_dataset(args.dataset, split=args.split)
     rows = [dict(row) for row in dataset]
     indices = read_sample_indices_file(args.sample_indices_file)
-    records = [
-        generate_skeleton_record(
-            problem_id=index,
-            example=rows[index],
-            api_key=args.api_key,
-            base_url=args.base_url,
-            model=args.skeleton_model,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-            timeout=args.timeout,
-            max_retries=args.max_retries,
-            skeleton_backend=args.skeleton_backend,
-            completion_fn=completion_fn,
-        )
-        for index in indices
-    ]
+    records = generate_skeleton_records(
+        indices=indices,
+        rows=rows,
+        api_key=args.api_key,
+        base_url=args.base_url,
+        model=args.skeleton_model,
+        temperature=args.temperature,
+        max_tokens=args.max_tokens,
+        timeout=args.timeout,
+        max_retries=args.max_retries,
+        skeleton_backend=args.skeleton_backend,
+        completion_fn=completion_fn,
+        api_concurrency=args.api_concurrency,
+    )
     write_jsonl(args.output_file, records)
 
     failures = [record for record in records if record.get("status") != "ok"]
