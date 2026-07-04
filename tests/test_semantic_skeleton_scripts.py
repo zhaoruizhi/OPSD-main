@@ -268,6 +268,103 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
             existing_ids = load_existing_problem_ids(output_path)
             self.assertEqual(filter_missing_indices([0, 1, 2, 3, 4], existing_ids), [3, 4])
 
+    def test_existing_summary_keeps_only_first_ok_record(self):
+        from eval.generate_semantic_skeletons import load_existing_skeleton_summary
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "skeletons.jsonl"
+            output_path.write_text(
+                '{"problem_id": 0, "status": "error", "error": "bad"}\n'
+                '{"problem_id": 1, "status": "ok", "skeleton": {"final_answer": "1"}}\n'
+                '{"problem_id": 1, "status": "ok", "skeleton": {"final_answer": "duplicate"}}\n'
+                '{"problem_id": 2, "status": "error", "error": "timeout"}\n',
+                encoding="utf-8",
+            )
+
+            summary = load_existing_skeleton_summary(output_path)
+
+            self.assertEqual(summary.seen_problem_ids, {0, 1, 2})
+            self.assertEqual(set(summary.ok_records), {1})
+            self.assertEqual(summary.ok_records[1]["skeleton"]["final_answer"], "1")
+            self.assertEqual(summary.error_count, 2)
+            self.assertEqual(summary.duplicate_count, 1)
+
+    def test_filter_pending_indices_continues_forward_before_repairing_old_errors(self):
+        from eval.generate_semantic_skeletons import filter_pending_indices
+
+        self.assertEqual(
+            filter_pending_indices(
+                [0, 1, 2, 3, 4, 5],
+                existing_ok_problem_ids={1, 2},
+                existing_seen_problem_ids={0, 1, 2, 3},
+            ),
+            [4, 5, 0, 3],
+        )
+
+    def test_rewrite_clean_output_file_drops_errors_and_duplicate_ok_records(self):
+        from eval.generate_semantic_skeletons import load_existing_skeleton_summary, rewrite_clean_output_file
+        from pathlib import Path
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "skeletons.jsonl"
+            output_path.write_text(
+                '{"problem_id": 0, "status": "error", "error": "bad"}\n'
+                '{"problem_id": 1, "status": "ok", "skeleton": {"final_answer": "1"}}\n'
+                '{"problem_id": 1, "status": "ok", "skeleton": {"final_answer": "duplicate"}}\n'
+                '{"problem_id": 2, "status": "ok", "skeleton": {"final_answer": "2"}}\n',
+                encoding="utf-8",
+            )
+
+            summary = load_existing_skeleton_summary(output_path)
+            rewrite_clean_output_file(output_path, summary.ok_records, [0, 1, 2])
+
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                '{"problem_id": 1, "status": "ok", "skeleton": {"final_answer": "1"}}\n'
+                '{"problem_id": 2, "status": "ok", "skeleton": {"final_answer": "2"}}\n',
+            )
+
+    def test_iter_skeleton_records_retries_until_ok_without_yielding_error(self):
+        from eval.generate_semantic_skeletons import iter_skeleton_records
+
+        calls = 0
+
+        def flaky_completion(*, answer, reference_solution):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise TimeoutError("API read timed out")
+            return (
+                '{"final_answer":"4","key_objects":[],"subgoals":["establish the sum"],'
+                '"critical_intermediates":["2+2=4"],"theorem_tags":[],"checks":[]}'
+            )
+
+        records = list(
+            iter_skeleton_records(
+                indices=[0],
+                rows=[{"answer": "4", "solution": "Compute 2+2 and conclude."}],
+                api_key=None,
+                base_url=None,
+                model="deepseek-v4-pro",
+                temperature=0.0,
+                max_tokens=128,
+                timeout=1.0,
+                max_retries=0,
+                skeleton_backend="api",
+                completion_fn=flaky_completion,
+                api_concurrency=1,
+                retry_until_ok=True,
+                retry_delay=0.0,
+                max_retry_delay=0.0,
+            )
+        )
+
+        self.assertEqual(calls, 2)
+        self.assertEqual([record["status"] for record in records], ["ok"])
+
     def test_generate_skeleton_args_allow_full_split_without_manifest(self):
         from eval.generate_semantic_skeletons import parse_args
 

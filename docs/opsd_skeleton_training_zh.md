@@ -160,7 +160,7 @@ python eval/generate_semantic_skeletons.py \
   --max-tokens 2048
 ```
 
-脚本默认会 resume：同一个 `--output-file` 已经写入过的 `problem_id` 会跳过，包括 `status=error` 的记录。这样中断后会继续往后生成，不会回到前面的失败样本补洞。全量跑完后再单独检查并处理 `status=error` 的记录。
+脚本默认会 resume，并会先清理已有 `--output-file`：只保留每个 `problem_id` 的第一条 `status=ok` 记录，删除旧的 `status=error` 和重复记录。继续生成时，脚本会先从旧文件最大 `problem_id` 之后往后跑；旧文件里只有 error、没有 ok 的样本会排到后面修复。默认情况下，新运行不会再写 `status=error`，而是在当前 worker 内反复重试同一题，直到拿到可解析的 skeleton 后才写入 JSONL。只有显式传 `--allow-error-records` 才会恢复旧行为。
 
 ### 3. 检查 skeleton 数量
 

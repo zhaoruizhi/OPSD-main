@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 import http.client
 import json
 import os
@@ -47,6 +48,16 @@ SKELETON_GENERATION_ERRORS = (
     ssl.SSLError,
     OSError,
 )
+
+
+@dataclass
+class ExistingSkeletonSummary:
+    ok_records: dict[int, dict[str, Any]] = field(default_factory=dict)
+    seen_problem_ids: set[int] = field(default_factory=set)
+    record_count: int = 0
+    error_count: int = 0
+    duplicate_count: int = 0
+    invalid_json_count: int = 0
 
 
 SYSTEM_PROMPT = """You are a mathematical semantic-skeleton compiler.
@@ -475,23 +486,48 @@ def iter_skeleton_records(
     skeleton_backend: str = "api",
     completion_fn: Callable[..., str] | None = None,
     api_concurrency: int = 1,
+    retry_until_ok: bool = True,
+    retry_delay: float = 2.0,
+    max_retry_delay: float = 60.0,
 ) -> Iterable[dict[str, Any]]:
     total = len(indices)
 
+    def retry_sleep_seconds(failure_round: int) -> float:
+        if retry_delay <= 0 or max_retry_delay <= 0:
+            return 0.0
+        return min(max_retry_delay, retry_delay * (2 ** min(failure_round - 1, 6)))
+
     def build_record(index: int) -> dict[str, Any]:
-        return generate_skeleton_record(
-            problem_id=index,
-            example=rows[index],
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            max_retries=max_retries,
-            skeleton_backend=skeleton_backend,
-            completion_fn=completion_fn,
-        )
+        failure_round = 0
+        while True:
+            record = generate_skeleton_record(
+                problem_id=index,
+                example=rows[index],
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                max_retries=max_retries,
+                skeleton_backend=skeleton_backend,
+                completion_fn=completion_fn,
+            )
+            if record.get("status") == "ok" or not retry_until_ok:
+                return record
+
+            failure_round += 1
+            delay = retry_sleep_seconds(failure_round)
+            print(
+                "Retrying problem_id="
+                f"{index} after failed attempt batch {failure_round}: "
+                f"{record.get('error', '')}"
+                + (f"; sleeping {delay:.1f}s" if delay > 0 else ""),
+                file=sys.stderr,
+                flush=True,
+            )
+            if delay > 0:
+                time.sleep(delay)
 
     print(
         f"Generating {total} skeletons with backend={skeleton_backend} concurrency={api_concurrency}",
@@ -501,7 +537,9 @@ def iter_skeleton_records(
 
     if skeleton_backend == "api" and api_concurrency > 1:
         with ThreadPoolExecutor(max_workers=api_concurrency) as executor:
-            for position, record in enumerate(executor.map(build_record, indices), start=1):
+            futures = [executor.submit(build_record, index) for index in indices]
+            for position, future in enumerate(as_completed(futures), start=1):
+                record = future.result()
                 if position == 1 or position == total or position % 10 == 0:
                     print(f"Completed {position}/{total} skeletons", file=sys.stderr, flush=True)
                 yield record
@@ -529,11 +567,11 @@ def write_jsonl_stream(path: str | Path, records: Iterable[dict[str, Any]], *, f
         handle.flush()
 
 
-def load_existing_problem_ids(path: str | Path) -> set[int]:
-    existing_ids: set[int] = set()
+def load_existing_skeleton_summary(path: str | Path) -> ExistingSkeletonSummary:
+    summary = ExistingSkeletonSummary()
     output_path = Path(path)
     if not output_path.exists():
-        return existing_ids
+        return summary
 
     with output_path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -543,15 +581,56 @@ def load_existing_problem_ids(path: str | Path) -> set[int]:
             try:
                 record = json.loads(stripped)
             except json.JSONDecodeError:
+                summary.invalid_json_count += 1
                 continue
+
+            summary.record_count += 1
             problem_id = record.get("problem_id")
-            if isinstance(problem_id, int):
-                existing_ids.add(problem_id)
-    return existing_ids
+            if not isinstance(problem_id, int):
+                continue
+
+            if problem_id in summary.seen_problem_ids:
+                summary.duplicate_count += 1
+            summary.seen_problem_ids.add(problem_id)
+
+            status = str(record.get("status", "ok")).lower()
+            if status in {"ok", "success"}:
+                summary.ok_records.setdefault(problem_id, record)
+            else:
+                summary.error_count += 1
+    return summary
+
+
+def load_existing_problem_ids(path: str | Path) -> set[int]:
+    return load_existing_skeleton_summary(path).seen_problem_ids
 
 
 def filter_missing_indices(indices: Sequence[int], existing_problem_ids: set[int]) -> list[int]:
     return [index for index in indices if index not in existing_problem_ids]
+
+
+def filter_pending_indices(
+    indices: Sequence[int],
+    *,
+    existing_ok_problem_ids: set[int],
+    existing_seen_problem_ids: set[int],
+) -> list[int]:
+    missing = [index for index in indices if index not in existing_ok_problem_ids]
+    if not existing_seen_problem_ids:
+        return missing
+
+    resume_after = max(existing_seen_problem_ids)
+    forward = [index for index in missing if index > resume_after]
+    repair = [index for index in missing if index <= resume_after]
+    return forward + repair
+
+
+def rewrite_clean_output_file(
+    path: str | Path,
+    ok_records: dict[int, dict[str, Any]],
+    indices: Sequence[int],
+) -> None:
+    write_jsonl(path, (ok_records[index] for index in indices if index in ok_records))
 
 
 def resolve_generation_indices(*, row_count: int, sample_indices_file: str | None) -> list[int]:
@@ -599,6 +678,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--max-retries", type=int, default=2)
+    parser.add_argument(
+        "--allow-error-records",
+        action="store_true",
+        help="After --max-retries is exhausted, write error records instead of retrying each problem until ok.",
+    )
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=float(os.environ.get("SKELETON_RETRY_DELAY", "2.0")),
+        help="Initial delay between failed retry batches when retrying until ok.",
+    )
+    parser.add_argument(
+        "--max-retry-delay",
+        type=float,
+        default=float(os.environ.get("SKELETON_MAX_RETRY_DELAY", "60.0")),
+        help="Maximum delay between failed retry batches when retrying until ok.",
+    )
     parser.add_argument(
         "--api-concurrency",
         type=int,
@@ -651,6 +747,10 @@ def main() -> None:
     args = parse_args()
     if args.flush_every <= 0:
         raise ValueError("--flush-every must be positive")
+    if args.retry_delay < 0:
+        raise ValueError("--retry-delay must be non-negative")
+    if args.max_retry_delay < 0:
+        raise ValueError("--max-retry-delay must be non-negative")
     completion_fn: Callable[..., str] | None = None
     if args.skeleton_backend == "api":
         if not args.api_key:
@@ -689,19 +789,47 @@ def main() -> None:
         flush=True,
     )
     resume = not args.no_resume
-    existing_problem_ids = load_existing_problem_ids(args.output_file) if resume else set()
-    if existing_problem_ids:
+    output_path = Path(args.output_file)
+    existing_summary = (
+        load_existing_skeleton_summary(output_path)
+        if resume
+        else ExistingSkeletonSummary()
+    )
+    existing_ok_problem_ids = set(existing_summary.ok_records)
+    existing_seen_problem_ids = existing_summary.seen_problem_ids
+    if existing_seen_problem_ids:
         print(
-            f"Resuming from {len(existing_problem_ids)} existing records in {args.output_file}",
+            "Resuming from "
+            f"{len(existing_ok_problem_ids)} ok records "
+            f"({existing_summary.error_count} errors, "
+            f"{existing_summary.duplicate_count} duplicates, "
+            f"{existing_summary.invalid_json_count} invalid JSON lines) "
+            f"in {args.output_file}",
             file=sys.stderr,
             flush=True,
         )
-    remaining_indices = filter_missing_indices(indices, existing_problem_ids)
+    dirty_existing_output = (
+        existing_summary.error_count > 0
+        or existing_summary.duplicate_count > 0
+        or existing_summary.invalid_json_count > 0
+    )
+    if resume and output_path.exists() and dirty_existing_output:
+        rewrite_clean_output_file(output_path, existing_summary.ok_records, indices)
+        print(
+            f"Cleaned existing output to {len(existing_ok_problem_ids)} unique ok records",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    remaining_indices = filter_pending_indices(
+        indices,
+        existing_ok_problem_ids=existing_ok_problem_ids,
+        existing_seen_problem_ids=existing_seen_problem_ids,
+    )
     if not remaining_indices:
         print("All requested skeletons already exist; nothing to do.", file=sys.stderr, flush=True)
         return
 
-    failures: list[dict[str, Any]] = []
     records = iter_skeleton_records(
         indices=remaining_indices,
         rows=rows,
@@ -715,10 +843,13 @@ def main() -> None:
         skeleton_backend=args.skeleton_backend,
         completion_fn=completion_fn,
         api_concurrency=args.api_concurrency,
+        retry_until_ok=not args.allow_error_records,
+        retry_delay=args.retry_delay,
+        max_retry_delay=args.max_retry_delay,
     )
-    output_path = Path(args.output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     open_mode = "a" if resume and output_path.exists() else "w"
+    failures: list[dict[str, Any]] = []
     with output_path.open(open_mode, encoding="utf-8") as handle:
         for position, record in enumerate(records, start=1):
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
