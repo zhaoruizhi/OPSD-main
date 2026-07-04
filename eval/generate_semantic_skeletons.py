@@ -50,6 +50,9 @@ SKELETON_GENERATION_ERRORS = (
 )
 
 
+NON_RETRYABLE_HTTP_STATUS_CODES = {400, 401, 403, 404, 405, 422}
+
+
 @dataclass
 class ExistingSkeletonSummary:
     ok_records: dict[int, dict[str, Any]] = field(default_factory=dict)
@@ -58,6 +61,19 @@ class ExistingSkeletonSummary:
     error_count: int = 0
     duplicate_count: int = 0
     invalid_json_count: int = 0
+
+
+def is_non_retryable_generation_error(error: str) -> bool:
+    for status_code in NON_RETRYABLE_HTTP_STATUS_CODES:
+        if f"HTTP Error {status_code}" in error:
+            return True
+    return False
+
+
+def is_non_retryable_generation_exception(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return int(exc.code) in NON_RETRYABLE_HTTP_STATUS_CODES
+    return is_non_retryable_generation_error(str(exc))
 
 
 SYSTEM_PROMPT = """You are a mathematical semantic-skeleton compiler.
@@ -402,6 +418,8 @@ def generate_skeleton_record(
             }
         except SKELETON_GENERATION_ERRORS as exc:
             last_error = str(exc)
+            if is_non_retryable_generation_exception(exc):
+                break
             if attempt < max_retries:
                 time.sleep(min(2**attempt, 8))
 
@@ -489,6 +507,7 @@ def iter_skeleton_records(
     retry_until_ok: bool = True,
     retry_delay: float = 2.0,
     max_retry_delay: float = 60.0,
+    failure_callback: Callable[[dict[str, Any], int], None] | None = None,
 ) -> Iterable[dict[str, Any]]:
     total = len(indices)
 
@@ -498,36 +517,30 @@ def iter_skeleton_records(
         return min(max_retry_delay, retry_delay * (2 ** min(failure_round - 1, 6)))
 
     def build_record(index: int) -> dict[str, Any]:
-        failure_round = 0
-        while True:
-            record = generate_skeleton_record(
-                problem_id=index,
-                example=rows[index],
-                api_key=api_key,
-                base_url=base_url,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=timeout,
-                max_retries=max_retries,
-                skeleton_backend=skeleton_backend,
-                completion_fn=completion_fn,
-            )
-            if record.get("status") == "ok" or not retry_until_ok:
-                return record
+        return generate_skeleton_record(
+            problem_id=index,
+            example=rows[index],
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            max_retries=max_retries,
+            skeleton_backend=skeleton_backend,
+            completion_fn=completion_fn,
+        )
 
-            failure_round += 1
-            delay = retry_sleep_seconds(failure_round)
-            print(
-                "Retrying problem_id="
-                f"{index} after failed attempt batch {failure_round}: "
-                f"{record.get('error', '')}"
-                + (f"; sleeping {delay:.1f}s" if delay > 0 else ""),
-                file=sys.stderr,
-                flush=True,
+    def handle_failed_record(record: dict[str, Any], retry_pass: int) -> None:
+        error = str(record.get("error", ""))
+        if is_non_retryable_generation_error(error):
+            raise RuntimeError(
+                "Encountered non-retryable skeleton generation error for "
+                f"problem_id={record.get('problem_id')}: {error}. Check SKELETON_API_KEY, "
+                "SKELETON_BASE_URL, SKELETON_MODEL, and endpoint permissions."
             )
-            if delay > 0:
-                time.sleep(delay)
+        if failure_callback is not None:
+            failure_callback(record, retry_pass)
 
     print(
         f"Generating {total} skeletons with backend={skeleton_backend} concurrency={api_concurrency}",
@@ -535,21 +548,57 @@ def iter_skeleton_records(
         flush=True,
     )
 
-    if skeleton_backend == "api" and api_concurrency > 1:
-        with ThreadPoolExecutor(max_workers=api_concurrency) as executor:
-            futures = [executor.submit(build_record, index) for index in indices]
-            for position, future in enumerate(as_completed(futures), start=1):
-                record = future.result()
-                if position == 1 or position == total or position % 10 == 0:
-                    print(f"Completed {position}/{total} skeletons", file=sys.stderr, flush=True)
-                yield record
-        return
+    pending = list(indices)
+    completed = 0
+    retry_pass = 0
+    while pending:
+        retry_pass += 1
+        failed_indices: list[int] = []
 
-    for position, index in enumerate(indices, start=1):
-        record = build_record(index)
-        if position == 1 or position == total or position % 10 == 0:
-            print(f"Completed {position}/{total} skeletons", file=sys.stderr, flush=True)
-        yield record
+        if retry_pass > 1:
+            delay = retry_sleep_seconds(retry_pass - 1)
+            print(
+                f"Retry pass {retry_pass} for {len(pending)} deferred skeletons"
+                + (f"; sleeping {delay:.1f}s" if delay > 0 else ""),
+                file=sys.stderr,
+                flush=True,
+            )
+            if delay > 0:
+                time.sleep(delay)
+
+        if skeleton_backend == "api" and api_concurrency > 1:
+            with ThreadPoolExecutor(max_workers=api_concurrency) as executor:
+                future_to_index = {executor.submit(build_record, index): index for index in pending}
+                for future in as_completed(future_to_index):
+                    index = future_to_index[future]
+                    record = future.result()
+                    if record.get("status") == "ok" or not retry_until_ok:
+                        completed += 1
+                        if completed == 1 or completed == total or completed % 10 == 0:
+                            print(f"Completed {completed}/{total} skeletons", file=sys.stderr, flush=True)
+                        yield record
+                    else:
+                        handle_failed_record(record, retry_pass)
+                        failed_indices.append(index)
+        else:
+            for index in pending:
+                record = build_record(index)
+                if record.get("status") == "ok" or not retry_until_ok:
+                    completed += 1
+                    if completed == 1 or completed == total or completed % 10 == 0:
+                        print(f"Completed {completed}/{total} skeletons", file=sys.stderr, flush=True)
+                    yield record
+                else:
+                    handle_failed_record(record, retry_pass)
+                    failed_indices.append(index)
+
+        if failed_indices and retry_until_ok:
+            print(
+                f"Deferred {len(failed_indices)}/{len(pending)} failed skeletons to a later pass",
+                file=sys.stderr,
+                flush=True,
+            )
+        pending = failed_indices
 
 
 def write_jsonl_stream(path: str | Path, records: Iterable[dict[str, Any]], *, flush_every: int = 10) -> None:
@@ -565,6 +614,13 @@ def write_jsonl_stream(path: str | Path, records: Iterable[dict[str, Any]], *, f
             if position % flush_every == 0:
                 handle.flush()
         handle.flush()
+
+
+def default_failure_file_for_output(output_file: str | Path) -> Path:
+    output_path = Path(output_file)
+    if output_path.suffix:
+        return output_path.with_name(f"{output_path.stem}.failures{output_path.suffix}")
+    return output_path.with_name(f"{output_path.name}.failures.jsonl")
 
 
 def load_existing_skeleton_summary(path: str | Path) -> ExistingSkeletonSummary:
@@ -682,6 +738,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--allow-error-records",
         action="store_true",
         help="After --max-retries is exhausted, write error records instead of retrying each problem until ok.",
+    )
+    parser.add_argument(
+        "--failure-file",
+        type=str,
+        default=os.environ.get("SKELETON_FAILURE_FILE"),
+        help="Sidecar JSONL for failed attempts. Defaults to <output-stem>.failures.jsonl.",
     )
     parser.add_argument(
         "--retry-delay",
@@ -830,34 +892,71 @@ def main() -> None:
         print("All requested skeletons already exist; nothing to do.", file=sys.stderr, flush=True)
         return
 
-    records = iter_skeleton_records(
-        indices=remaining_indices,
-        rows=rows,
-        api_key=args.api_key,
-        base_url=args.base_url,
-        model=args.skeleton_model,
-        temperature=args.temperature,
-        max_tokens=args.max_tokens,
-        timeout=args.timeout,
-        max_retries=args.max_retries,
-        skeleton_backend=args.skeleton_backend,
-        completion_fn=completion_fn,
-        api_concurrency=args.api_concurrency,
-        retry_until_ok=not args.allow_error_records,
-        retry_delay=args.retry_delay,
-        max_retry_delay=args.max_retry_delay,
-    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    failure_path = Path(args.failure_file) if args.failure_file else default_failure_file_for_output(output_path)
+    failure_handle = None
+    if not args.allow_error_records:
+        failure_path.parent.mkdir(parents=True, exist_ok=True)
+        failure_handle = failure_path.open("a", encoding="utf-8")
+        print(f"Failure sidecar: {failure_path}", file=sys.stderr, flush=True)
+
+        def record_failure(record: dict[str, Any], retry_pass: int) -> None:
+            payload = dict(record)
+            payload["retry_pass"] = retry_pass
+            payload["attempted_at_unix"] = time.time()
+            failure_handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            failure_handle.flush()
+
+        records = iter_skeleton_records(
+            indices=remaining_indices,
+            rows=rows,
+            api_key=args.api_key,
+            base_url=args.base_url,
+            model=args.skeleton_model,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+            timeout=args.timeout,
+            max_retries=args.max_retries,
+            skeleton_backend=args.skeleton_backend,
+            completion_fn=completion_fn,
+            api_concurrency=args.api_concurrency,
+            retry_until_ok=True,
+            retry_delay=args.retry_delay,
+            max_retry_delay=args.max_retry_delay,
+            failure_callback=record_failure,
+        )
+    else:
+        records = iter_skeleton_records(
+            indices=remaining_indices,
+            rows=rows,
+            api_key=args.api_key,
+            base_url=args.base_url,
+            model=args.skeleton_model,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+            timeout=args.timeout,
+            max_retries=args.max_retries,
+            skeleton_backend=args.skeleton_backend,
+            completion_fn=completion_fn,
+            api_concurrency=args.api_concurrency,
+            retry_until_ok=False,
+            retry_delay=args.retry_delay,
+            max_retry_delay=args.max_retry_delay,
+        )
     open_mode = "a" if resume and output_path.exists() else "w"
     failures: list[dict[str, Any]] = []
-    with output_path.open(open_mode, encoding="utf-8") as handle:
-        for position, record in enumerate(records, start=1):
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-            if position % args.flush_every == 0:
-                handle.flush()
-            if record.get("status") != "ok":
-                failures.append(record)
-        handle.flush()
+    try:
+        with output_path.open(open_mode, encoding="utf-8") as handle:
+            for position, record in enumerate(records, start=1):
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                if position % args.flush_every == 0:
+                    handle.flush()
+                if record.get("status") != "ok":
+                    failures.append(record)
+            handle.flush()
+    finally:
+        if failure_handle is not None:
+            failure_handle.close()
 
     if failures:
         raise RuntimeError(f"semantic skeleton generation failed for {len(failures)} examples")

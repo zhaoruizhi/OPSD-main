@@ -365,6 +365,100 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertEqual(calls, 2)
         self.assertEqual([record["status"] for record in records], ["ok"])
 
+    def test_iter_skeleton_records_defers_failures_without_blocking_other_records(self):
+        from eval.generate_semantic_skeletons import iter_skeleton_records
+
+        attempts = {"bad first": 0}
+        failures = []
+
+        def mixed_completion(*, answer, reference_solution):
+            if reference_solution == "bad first":
+                attempts[reference_solution] += 1
+                if attempts[reference_solution] == 1:
+                    raise TimeoutError("API read timed out")
+            final_answer = answer or ""
+            return (
+                f'{{"final_answer":"{final_answer}","key_objects":[],"subgoals":["ok"],'
+                '"critical_intermediates":[],"theorem_tags":[],"checks":[]}'
+            )
+
+        records = list(
+            iter_skeleton_records(
+                indices=[0, 1, 2],
+                rows=[
+                    {"answer": "0", "solution": "bad first"},
+                    {"answer": "1", "solution": "good second"},
+                    {"answer": "2", "solution": "good third"},
+                ],
+                api_key=None,
+                base_url=None,
+                model="deepseek-v4-pro",
+                temperature=0.0,
+                max_tokens=128,
+                timeout=1.0,
+                max_retries=0,
+                skeleton_backend="api",
+                completion_fn=mixed_completion,
+                api_concurrency=1,
+                retry_until_ok=True,
+                retry_delay=0.0,
+                max_retry_delay=0.0,
+                failure_callback=lambda record, retry_pass: failures.append((record["problem_id"], retry_pass)),
+            )
+        )
+
+        self.assertEqual([record["problem_id"] for record in records], [1, 2, 0])
+        self.assertEqual(failures, [(0, 1)])
+
+    def test_default_failure_file_for_output_uses_sidecar_name(self):
+        from eval.generate_semantic_skeletons import default_failure_file_for_output
+
+        self.assertEqual(
+            str(default_failure_file_for_output("/tmp/skeletons.jsonl")),
+            "/tmp/skeletons.failures.jsonl",
+        )
+
+    def test_auth_errors_are_non_retryable(self):
+        from eval.generate_semantic_skeletons import is_non_retryable_generation_error
+
+        self.assertTrue(is_non_retryable_generation_error("HTTP Error 401: Unauthorized"))
+        self.assertTrue(is_non_retryable_generation_error("HTTP Error 403: Forbidden"))
+        self.assertTrue(is_non_retryable_generation_error("HTTP Error 405: Method Not Allowed"))
+        self.assertFalse(is_non_retryable_generation_error("HTTP Error 504: Gateway Timeout"))
+        self.assertFalse(is_non_retryable_generation_error("Expecting value: line 1 column 1 (char 0)"))
+
+    def test_iter_skeleton_records_fails_fast_on_auth_error(self):
+        from eval.generate_semantic_skeletons import iter_skeleton_records
+
+        calls = 0
+
+        def unauthorized_completion(*, answer, reference_solution):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("HTTP Error 401: Unauthorized")
+
+        with self.assertRaisesRegex(RuntimeError, "non-retryable.*401"):
+            list(
+                iter_skeleton_records(
+                    indices=[0],
+                    rows=[{"answer": "4", "solution": "Compute 2+2 and conclude."}],
+                    api_key=None,
+                    base_url=None,
+                    model="deepseek-v4-pro",
+                    temperature=0.0,
+                    max_tokens=128,
+                    timeout=1.0,
+                    max_retries=5,
+                    skeleton_backend="api",
+                    completion_fn=unauthorized_completion,
+                    api_concurrency=1,
+                    retry_until_ok=True,
+                    retry_delay=0.0,
+                    max_retry_delay=0.0,
+                )
+            )
+        self.assertEqual(calls, 1)
+
     def test_generate_skeleton_args_allow_full_split_without_manifest(self):
         from eval.generate_semantic_skeletons import parse_args
 
