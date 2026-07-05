@@ -230,6 +230,45 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
 
         self.assertEqual(captured_payloads[0]["response_format"], {"type": "json_object"})
 
+    def test_call_chat_completion_can_disable_deepseek_thinking(self):
+        from eval.generate_semantic_skeletons import call_chat_completion
+
+        captured_payloads = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"choices":[{"finish_reason":"stop","message":{"content":'
+                    b'"{\\"final_answer\\":\\"4\\",\\"key_objects\\":[],'
+                    b'\\"subgoals\\":[],\\"critical_intermediates\\":[],'
+                    b'\\"theorem_tags\\":[],\\"checks\\":[]}"}}]}'
+                )
+
+        def fake_urlopen(request, timeout):
+            captured_payloads.append(__import__("json").loads(request.data.decode("utf-8")))
+            return FakeResponse()
+
+        with patch("eval.generate_semantic_skeletons.urllib.request.urlopen", side_effect=fake_urlopen):
+            call_chat_completion(
+                api_key="key",
+                base_url="https://api.deepseek.com",
+                model="deepseek-v4-pro",
+                answer="4",
+                reference_solution="Compute 2+2.",
+                temperature=0.0,
+                max_tokens=128,
+                timeout=1.0,
+                api_disable_thinking=True,
+            )
+
+        self.assertEqual(captured_payloads[0]["thinking"], {"type": "disabled"})
+
     def test_generate_skeleton_record_keeps_api_diagnostics_for_empty_content_error(self):
         from eval.generate_semantic_skeletons import SkeletonAPIResponseError, generate_skeleton_record
 
@@ -556,6 +595,21 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
             "/tmp/skeletons.failures.jsonl",
         )
 
+    def test_generate_skeleton_args_can_disable_api_thinking(self):
+        from eval.generate_semantic_skeletons import parse_args
+
+        args = parse_args(
+            [
+                "--output-file",
+                "skeletons.jsonl",
+                "--skeleton-backend",
+                "api",
+                "--api-disable-thinking",
+            ]
+        )
+
+        self.assertTrue(args.api_disable_thinking)
+
     def test_auth_errors_are_non_retryable(self):
         from eval.generate_semantic_skeletons import is_non_retryable_generation_error
 
@@ -679,6 +733,10 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertIn('--timeout "$SKELETON_TIMEOUT"', script)
         self.assertIn('--abort-after-consecutive-failures "$SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES"', script)
         self.assertIn("SKELETON_GENERATE_ARGS+=(--response-format-json)", script)
+        self.assertIn('SKELETON_API_DISABLE_THINKING="${SKELETON_API_DISABLE_THINKING:-0}"', script)
+        self.assertIn("--skeleton-api-disable-thinking)", script)
+        self.assertIn("--skeleton-api-enable-thinking)", script)
+        self.assertIn("SKELETON_GENERATE_ARGS+=(--api-disable-thinking)", script)
 
     def test_reference_prompt_keeps_solution_and_exposes_ground_truth(self):
         from eval.quick_opsd_common import build_reference_user_message

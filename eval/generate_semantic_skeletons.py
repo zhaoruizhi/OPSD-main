@@ -415,6 +415,7 @@ def call_chat_completion(
     max_tokens: int,
     timeout: float,
     response_format_json: bool = False,
+    api_disable_thinking: bool = False,
 ) -> str:
     endpoint = build_chat_completion_endpoint(base_url)
     payload = {
@@ -425,6 +426,8 @@ def call_chat_completion(
     }
     if response_format_json:
         payload["response_format"] = {"type": "json_object"}
+    if api_disable_thinking:
+        payload["thinking"] = {"type": "disabled"}
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
@@ -522,6 +525,7 @@ def generate_skeleton_record(
     skeleton_backend: str = "api",
     completion_fn: Callable[..., str] | None = None,
     response_format_json: bool = False,
+    api_disable_thinking: bool = False,
 ) -> dict[str, Any]:
     solution = get_solution_text(example)
     ground_truth = get_ground_truth_answer(example)
@@ -542,6 +546,7 @@ def generate_skeleton_record(
                 max_tokens=max_tokens,
                 timeout=timeout,
                 response_format_json=response_format_json,
+                api_disable_thinking=api_disable_thinking,
             )
 
     last_error = ""
@@ -603,6 +608,7 @@ def generate_skeleton_records(
     completion_fn: Callable[..., str] | None = None,
     api_concurrency: int = 1,
     response_format_json: bool = False,
+    api_disable_thinking: bool = False,
 ) -> list[dict[str, Any]]:
     total = len(indices)
 
@@ -620,6 +626,7 @@ def generate_skeleton_records(
             skeleton_backend=skeleton_backend,
             completion_fn=completion_fn,
             response_format_json=response_format_json,
+            api_disable_thinking=api_disable_thinking,
         )
 
     print(
@@ -664,6 +671,7 @@ def iter_skeleton_records(
     max_retry_delay: float = 60.0,
     failure_callback: Callable[[dict[str, Any], int], None] | None = None,
     response_format_json: bool = False,
+    api_disable_thinking: bool = False,
     abort_after_consecutive_failures: int = 50,
 ) -> Iterable[dict[str, Any]]:
     total = len(indices)
@@ -687,6 +695,7 @@ def iter_skeleton_records(
             skeleton_backend=skeleton_backend,
             completion_fn=completion_fn,
             response_format_json=response_format_json,
+            api_disable_thinking=api_disable_thinking,
         )
 
     consecutive_failures = 0
@@ -969,6 +978,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Request OpenAI-compatible JSON object mode via response_format={type: json_object}.",
     )
     parser.add_argument(
+        "--api-disable-thinking",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("SKELETON_API_DISABLE_THINKING", False),
+        help=(
+            "Send DeepSeek-compatible thinking={type: disabled} in API requests. "
+            "Use this for DeepSeek official API skeleton generation."
+        ),
+    )
+    parser.add_argument(
         "--api-concurrency",
         type=int,
         default=int(os.environ.get("SKELETON_API_CONCURRENCY", "1")),
@@ -1138,6 +1156,7 @@ def main() -> None:
             max_retry_delay=args.max_retry_delay,
             failure_callback=record_failure,
             response_format_json=args.response_format_json,
+            api_disable_thinking=args.api_disable_thinking,
             abort_after_consecutive_failures=args.abort_after_consecutive_failures,
         )
     else:
@@ -1158,6 +1177,7 @@ def main() -> None:
             retry_delay=args.retry_delay,
             max_retry_delay=args.max_retry_delay,
             response_format_json=args.response_format_json,
+            api_disable_thinking=args.api_disable_thinking,
             abort_after_consecutive_failures=args.abort_after_consecutive_failures,
         )
     open_mode = "a" if resume and output_path.exists() else "w"
