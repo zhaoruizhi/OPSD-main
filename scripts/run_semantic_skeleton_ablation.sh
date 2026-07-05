@@ -29,6 +29,13 @@ SKELETON_BACKEND="${SKELETON_BACKEND:-api}"
 SKELETON_MODEL="${SKELETON_MODEL:-}"
 SKELETON_GPUS="${SKELETON_GPUS:-}"
 SKELETON_API_CONCURRENCY="${SKELETON_API_CONCURRENCY:-8}"
+SKELETON_TIMEOUT="${SKELETON_TIMEOUT:-300}"
+SKELETON_MAX_RETRIES="${SKELETON_MAX_RETRIES:-2}"
+SKELETON_FLUSH_EVERY="${SKELETON_FLUSH_EVERY:-10}"
+SKELETON_RETRY_DELAY="${SKELETON_RETRY_DELAY:-2.0}"
+SKELETON_MAX_RETRY_DELAY="${SKELETON_MAX_RETRY_DELAY:-60.0}"
+SKELETON_RESPONSE_FORMAT_JSON="${SKELETON_RESPONSE_FORMAT_JSON:-0}"
+SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES="${SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES:-50}"
 SKELETON_VLLM_TENSOR_PARALLEL_SIZE="${SKELETON_VLLM_TENSOR_PARALLEL_SIZE:-1}"
 SKELETON_VLLM_GPU_MEMORY_UTILIZATION="${SKELETON_VLLM_GPU_MEMORY_UTILIZATION:-$GPU_MEMORY_UTILIZATION}"
 SKELETON_VLLM_MAX_MODEL_LEN="${SKELETON_VLLM_MAX_MODEL_LEN:-$MAX_MODEL_LEN}"
@@ -144,6 +151,38 @@ while [[ $# -gt 0 ]]; do
       SKELETON_GPUS="$2"
       shift 2
       ;;
+    --skeleton-timeout)
+      SKELETON_TIMEOUT="$2"
+      shift 2
+      ;;
+    --skeleton-max-retries)
+      SKELETON_MAX_RETRIES="$2"
+      shift 2
+      ;;
+    --skeleton-flush-every)
+      SKELETON_FLUSH_EVERY="$2"
+      shift 2
+      ;;
+    --skeleton-retry-delay)
+      SKELETON_RETRY_DELAY="$2"
+      shift 2
+      ;;
+    --skeleton-max-retry-delay)
+      SKELETON_MAX_RETRY_DELAY="$2"
+      shift 2
+      ;;
+    --skeleton-abort-after-consecutive-failures)
+      SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES="$2"
+      shift 2
+      ;;
+    --skeleton-response-format-json)
+      SKELETON_RESPONSE_FORMAT_JSON=1
+      shift
+      ;;
+    --skeleton-no-response-format-json)
+      SKELETON_RESPONSE_FORMAT_JSON=0
+      shift
+      ;;
     --skeleton-vllm-tensor-parallel-size)
       SKELETON_VLLM_TENSOR_PARALLEL_SIZE="$2"
       shift 2
@@ -225,7 +264,8 @@ echo "Skeleton backend: $SKELETON_BACKEND | Skeleton model: $SKELETON_MODEL_FOR_
 if [[ "$SKELETON_BACKEND" == "vllm" ]]; then
   echo "Skeleton vLLM GPUs: $SKELETON_GPUS | TP: $SKELETON_VLLM_TENSOR_PARALLEL_SIZE"
 else
-  echo "Skeleton API concurrency: $SKELETON_API_CONCURRENCY"
+  echo "Skeleton API concurrency: $SKELETON_API_CONCURRENCY | Timeout: $SKELETON_TIMEOUT | Max retries: $SKELETON_MAX_RETRIES"
+  echo "Skeleton JSON response_format: $SKELETON_RESPONSE_FORMAT_JSON | Abort after failures: $SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES"
 fi
 
 echo
@@ -255,6 +295,12 @@ else
     --skeleton-backend "$SKELETON_BACKEND"
     --skeleton-model "$SKELETON_MODEL_FOR_RUN"
     --max-tokens "$SKELETON_MAX_TOKENS"
+    --timeout "$SKELETON_TIMEOUT"
+    --max-retries "$SKELETON_MAX_RETRIES"
+    --flush-every "$SKELETON_FLUSH_EVERY"
+    --retry-delay "$SKELETON_RETRY_DELAY"
+    --max-retry-delay "$SKELETON_MAX_RETRY_DELAY"
+    --abort-after-consecutive-failures "$SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES"
   )
   if [[ "$SKELETON_BACKEND" == "vllm" ]]; then
     SKELETON_GENERATE_ARGS+=(
@@ -270,6 +316,9 @@ else
     CUDA_VISIBLE_DEVICES="$SKELETON_GPUS" python "${SKELETON_GENERATE_ARGS[@]}"
   else
     SKELETON_GENERATE_ARGS+=(--api-concurrency "$SKELETON_API_CONCURRENCY")
+    if [[ "$SKELETON_RESPONSE_FORMAT_JSON" == "1" ]]; then
+      SKELETON_GENERATE_ARGS+=(--response-format-json)
+    fi
     python "${SKELETON_GENERATE_ARGS[@]}"
   fi
 fi

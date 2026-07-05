@@ -51,6 +51,27 @@ SKELETON_GENERATION_ERRORS = (
 
 
 NON_RETRYABLE_HTTP_STATUS_CODES = {400, 401, 403, 404, 405, 422}
+MAX_LOGGED_API_RESPONSE_CHARS = 12000
+
+
+def truncate_for_log(content: str, *, max_chars: int = MAX_LOGGED_API_RESPONSE_CHARS) -> str:
+    if len(content) <= max_chars:
+        return content
+    omitted = len(content) - max_chars
+    return f"{content[:max_chars]}... [truncated {omitted} chars]"
+
+
+class SkeletonAPIResponseError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_response: str = "",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.raw_response = truncate_for_log(raw_response)
+        self.details = details or {}
 
 
 @dataclass
@@ -283,6 +304,57 @@ def parse_skeleton_response(content: str) -> dict[str, Any]:
     return normalize_semantic_skeleton(parsed)
 
 
+def build_chat_completion_endpoint(base_url: str) -> str:
+    normalized = base_url.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    return f"{normalized}/chat/completions"
+
+
+def extract_chat_message_content(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                elif isinstance(item.get("content"), str):
+                    parts.append(str(item["content"]))
+        return "".join(parts)
+    return str(content)
+
+
+def sorted_keys(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    return sorted(str(key) for key in value)
+
+
+def build_api_response_details(body: Any, choice: Any, message: Any) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "body_keys": sorted_keys(body),
+        "choice_keys": sorted_keys(choice),
+        "message_keys": sorted_keys(message),
+    }
+    if isinstance(choice, dict) and "finish_reason" in choice:
+        details["finish_reason"] = choice.get("finish_reason")
+    if isinstance(body, dict) and "usage" in body:
+        details["usage"] = body.get("usage")
+    return details
+
+
+def api_response_error(message: str, *, raw_response: str, details: dict[str, Any]) -> SkeletonAPIResponseError:
+    return SkeletonAPIResponseError(message, raw_response=raw_response, details=details)
+
+
 class VllmSkeletonCompletion:
     def __init__(
         self,
@@ -342,14 +414,17 @@ def call_chat_completion(
     temperature: float,
     max_tokens: int,
     timeout: float,
+    response_format_json: bool = False,
 ) -> str:
-    endpoint = f"{base_url.rstrip('/')}/chat/completions"
+    endpoint = build_chat_completion_endpoint(base_url)
     payload = {
         "model": model,
         "messages": build_skeleton_compiler_messages(answer, reference_solution),
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    if response_format_json:
+        payload["response_format"] = {"type": "json_object"}
     request = urllib.request.Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
@@ -359,9 +434,78 @@ def call_chat_completion(
         },
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        body = json.loads(response.read().decode("utf-8"))
-    return str(body["choices"][0]["message"]["content"])
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw_body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        raw_body = exc.read().decode("utf-8", errors="replace")
+        raise SkeletonAPIResponseError(
+            f"HTTP Error {exc.code}: {exc.reason}",
+            raw_response=raw_body,
+            details={
+                "http_status": int(exc.code),
+                "http_reason": str(exc.reason),
+                "body_keys": [],
+                "choice_keys": [],
+                "message_keys": [],
+            },
+        ) from exc
+
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise api_response_error(
+            f"API returned non-JSON response body: {exc}",
+            raw_response=raw_body,
+            details={"body_keys": [], "choice_keys": [], "message_keys": []},
+        ) from exc
+
+    if not isinstance(body, dict):
+        raise api_response_error(
+            f"API returned JSON {type(body).__name__}, expected object",
+            raw_response=raw_body,
+            details={"body_keys": [], "choice_keys": [], "message_keys": []},
+        )
+
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise api_response_error(
+            "API response does not contain a non-empty choices list",
+            raw_response=raw_body,
+            details=build_api_response_details(body, {}, {}),
+        )
+
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise api_response_error(
+            f"API response choice is {type(choice).__name__}, expected object",
+            raw_response=raw_body,
+            details=build_api_response_details(body, choice, {}),
+        )
+
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise api_response_error(
+            "API response choice does not contain a message object",
+            raw_response=raw_body,
+            details=build_api_response_details(body, choice, message),
+        )
+
+    content = extract_chat_message_content(message)
+    if not content.strip():
+        details = build_api_response_details(body, choice, message)
+        finish_reason = details.get("finish_reason")
+        raise api_response_error(
+            "API returned empty assistant content; "
+            f"finish_reason={finish_reason}; "
+            f"message_keys={details.get('message_keys', [])}; "
+            f"choice_keys={details.get('choice_keys', [])}; "
+            f"body_keys={details.get('body_keys', [])}",
+            raw_response=raw_body,
+            details=details,
+        )
+
+    return content
 
 
 def generate_skeleton_record(
@@ -377,6 +521,7 @@ def generate_skeleton_record(
     max_retries: int,
     skeleton_backend: str = "api",
     completion_fn: Callable[..., str] | None = None,
+    response_format_json: bool = False,
 ) -> dict[str, Any]:
     solution = get_solution_text(example)
     ground_truth = get_ground_truth_answer(example)
@@ -396,10 +541,12 @@ def generate_skeleton_record(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                response_format_json=response_format_json,
             )
 
     last_error = ""
     last_raw = ""
+    last_details: dict[str, Any] = {}
     for attempt in range(max_retries + 1):
         try:
             raw = completion_fn(
@@ -418,12 +565,15 @@ def generate_skeleton_record(
             }
         except SKELETON_GENERATION_ERRORS as exc:
             last_error = str(exc)
+            if isinstance(exc, SkeletonAPIResponseError):
+                last_raw = exc.raw_response
+                last_details = dict(exc.details)
             if is_non_retryable_generation_exception(exc):
                 break
             if attempt < max_retries:
                 time.sleep(min(2**attempt, 8))
 
-    return {
+    record = {
         "problem_id": problem_id,
         "ground_truth": ground_truth,
         "skeleton": None,
@@ -433,6 +583,9 @@ def generate_skeleton_record(
         "error": last_error,
         "raw_response": last_raw,
     }
+    for key, value in last_details.items():
+        record[f"api_{key}"] = value
+    return record
 
 
 def generate_skeleton_records(
@@ -449,6 +602,7 @@ def generate_skeleton_records(
     skeleton_backend: str = "api",
     completion_fn: Callable[..., str] | None = None,
     api_concurrency: int = 1,
+    response_format_json: bool = False,
 ) -> list[dict[str, Any]]:
     total = len(indices)
 
@@ -465,6 +619,7 @@ def generate_skeleton_records(
             max_retries=max_retries,
             skeleton_backend=skeleton_backend,
             completion_fn=completion_fn,
+            response_format_json=response_format_json,
         )
 
     print(
@@ -508,6 +663,8 @@ def iter_skeleton_records(
     retry_delay: float = 2.0,
     max_retry_delay: float = 60.0,
     failure_callback: Callable[[dict[str, Any], int], None] | None = None,
+    response_format_json: bool = False,
+    abort_after_consecutive_failures: int = 50,
 ) -> Iterable[dict[str, Any]]:
     total = len(indices)
 
@@ -529,9 +686,17 @@ def iter_skeleton_records(
             max_retries=max_retries,
             skeleton_backend=skeleton_backend,
             completion_fn=completion_fn,
+            response_format_json=response_format_json,
         )
 
+    consecutive_failures = 0
+
+    def reset_consecutive_failures() -> None:
+        nonlocal consecutive_failures
+        consecutive_failures = 0
+
     def handle_failed_record(record: dict[str, Any], retry_pass: int) -> None:
+        nonlocal consecutive_failures
         error = str(record.get("error", ""))
         if is_non_retryable_generation_error(error):
             raise RuntimeError(
@@ -541,6 +706,19 @@ def iter_skeleton_records(
             )
         if failure_callback is not None:
             failure_callback(record, retry_pass)
+        consecutive_failures += 1
+        if (
+            abort_after_consecutive_failures > 0
+            and consecutive_failures >= abort_after_consecutive_failures
+        ):
+            raise RuntimeError(
+                f"Observed {consecutive_failures} consecutive skeleton generation failures; "
+                f"last problem_id={record.get('problem_id')} error={error}. "
+                "This usually means the API endpoint is returning empty/non-JSON responses, "
+                "the model is incompatible with the requested chat schema, or request settings "
+                "need adjustment. Check the failure sidecar for api_* diagnostics. "
+                "Set --abort-after-consecutive-failures 0 to disable this guard."
+            )
 
     print(
         f"Generating {total} skeletons with backend={skeleton_backend} concurrency={api_concurrency}",
@@ -568,11 +746,27 @@ def iter_skeleton_records(
 
         if skeleton_backend == "api" and api_concurrency > 1:
             with ThreadPoolExecutor(max_workers=api_concurrency) as executor:
-                future_to_index = {executor.submit(build_record, index): index for index in pending}
-                for future in as_completed(future_to_index):
+                pending_iter = iter(pending)
+                future_to_index = {}
+
+                def submit_next() -> None:
+                    try:
+                        next_index = next(pending_iter)
+                    except StopIteration:
+                        return
+                    future_to_index[executor.submit(build_record, next_index)] = next_index
+
+                for _ in range(api_concurrency):
+                    submit_next()
+
+                while future_to_index:
+                    for future in as_completed(future_to_index):
+                        break
                     index = future_to_index[future]
+                    del future_to_index[future]
                     record = future.result()
                     if record.get("status") == "ok" or not retry_until_ok:
+                        reset_consecutive_failures()
                         completed += 1
                         if completed == 1 or completed == total or completed % 10 == 0:
                             print(f"Completed {completed}/{total} skeletons", file=sys.stderr, flush=True)
@@ -580,10 +774,12 @@ def iter_skeleton_records(
                     else:
                         handle_failed_record(record, retry_pass)
                         failed_indices.append(index)
+                    submit_next()
         else:
             for index in pending:
                 record = build_record(index)
                 if record.get("status") == "ok" or not retry_until_ok:
+                    reset_consecutive_failures()
                     completed += 1
                     if completed == 1 or completed == total or completed % 10 == 0:
                         print(f"Completed {completed}/{total} skeletons", file=sys.stderr, flush=True)
@@ -758,6 +954,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Maximum delay between failed retry batches when retrying until ok.",
     )
     parser.add_argument(
+        "--abort-after-consecutive-failures",
+        type=int,
+        default=int(os.environ.get("SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES", "50")),
+        help=(
+            "Abort after this many consecutive retryable failures, which usually indicates "
+            "an API/config issue. Set 0 to retry forever."
+        ),
+    )
+    parser.add_argument(
+        "--response-format-json",
+        action=argparse.BooleanOptionalAction,
+        default=_env_flag("SKELETON_RESPONSE_FORMAT_JSON", False),
+        help="Request OpenAI-compatible JSON object mode via response_format={type: json_object}.",
+    )
+    parser.add_argument(
         "--api-concurrency",
         type=int,
         default=int(os.environ.get("SKELETON_API_CONCURRENCY", "1")),
@@ -813,6 +1024,8 @@ def main() -> None:
         raise ValueError("--retry-delay must be non-negative")
     if args.max_retry_delay < 0:
         raise ValueError("--max-retry-delay must be non-negative")
+    if args.abort_after_consecutive_failures < 0:
+        raise ValueError("--abort-after-consecutive-failures must be non-negative")
     completion_fn: Callable[..., str] | None = None
     if args.skeleton_backend == "api":
         if not args.api_key:
@@ -924,6 +1137,8 @@ def main() -> None:
             retry_delay=args.retry_delay,
             max_retry_delay=args.max_retry_delay,
             failure_callback=record_failure,
+            response_format_json=args.response_format_json,
+            abort_after_consecutive_failures=args.abort_after_consecutive_failures,
         )
     else:
         records = iter_skeleton_records(
@@ -942,6 +1157,8 @@ def main() -> None:
             retry_until_ok=False,
             retry_delay=args.retry_delay,
             max_retry_delay=args.max_retry_delay,
+            response_format_json=args.response_format_json,
+            abort_after_consecutive_failures=args.abort_after_consecutive_failures,
         )
     open_mode = "a" if resume and output_path.exists() else "w"
     failures: list[dict[str, Any]] = []

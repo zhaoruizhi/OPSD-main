@@ -81,7 +81,9 @@ Please reason step by step, and put your final answer within \boxed{}.
 - `SKELETON_API_KEY`: API key。
 - `SKELETON_BASE_URL`: OpenAI-compatible endpoint，例如 `https://你的-openai-compatible-endpoint/v1`。
 - `SKELETON_MODEL`: API model name，例如 `deepseek-v4-pro`。
-- `SKELETON_API_CONCURRENCY`: API 并发数，默认可用 `8`，有速率限制时降到 `2` 或 `4`。
+- `SKELETON_API_CONCURRENCY`: API 并发数。建议先用 `2` 跑通，再按 endpoint 稳定性升到 `4` 或 `8`。
+- `SKELETON_RESPONSE_FORMAT_JSON`: 设为 `1` 时请求 OpenAI-compatible JSON object mode；如果 endpoint 不支持并返回 400/422，设回 `0`。
+- `SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES`: 连续失败保护，默认 `50`；设为 `0` 表示不自动中止。
 
 参数要点：
 
@@ -104,7 +106,10 @@ cd /Users/zhaoruizhi/Desktop/code/OPSD-main
 export SKELETON_API_KEY="你的_API_KEY"
 export SKELETON_BASE_URL="https://你的-openai-compatible-endpoint/v1"
 export SKELETON_MODEL="deepseek-v4-pro"
-export SKELETON_API_CONCURRENCY=8
+export SKELETON_API_CONCURRENCY=2
+export SKELETON_TIMEOUT=300
+export SKELETON_RESPONSE_FORMAT_JSON=1
+export SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES=50
 
 MODEL=/data0/shared/Qwen3-1.7B \
 OUT=/data1/opsd_quick/qwen31b_skeleton_ablation_api_skeleton_$(date +%Y%m%d_%H%M%S) \
@@ -115,6 +120,9 @@ bash scripts/run_semantic_skeleton_ablation.sh quick \
   --gpus "4 5 6 7" \
   --skeleton-backend api \
   --skeleton-model "$SKELETON_MODEL" \
+  --skeleton-timeout "$SKELETON_TIMEOUT" \
+  --skeleton-abort-after-consecutive-failures "$SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES" \
+  --skeleton-response-format-json \
   --sample-size 128 \
   --val-n 4 \
   --max-new-tokens 16384 \
@@ -135,7 +143,10 @@ cd /Users/zhaoruizhi/Desktop/code/OPSD-main
 export SKELETON_API_KEY="你的_API_KEY"
 export SKELETON_BASE_URL="https://你的-openai-compatible-endpoint/v1"
 export SKELETON_MODEL="deepseek-v4-pro"
-export SKELETON_API_CONCURRENCY=8
+export SKELETON_API_CONCURRENCY=2
+export SKELETON_TIMEOUT=300
+export SKELETON_RESPONSE_FORMAT_JSON=1
+export SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES=50
 
 MODEL=/data0/shared/Qwen3-1.7B \
 OUT=/data1/opsd_quick/qwen31b_skeleton_ablation_api_skeleton_reuse_$(date +%Y%m%d_%H%M%S) \
@@ -147,6 +158,9 @@ bash scripts/run_semantic_skeleton_ablation.sh quick \
   --sample-indices-file /path/to/sample_indices.json \
   --skeleton-backend api \
   --skeleton-model "$SKELETON_MODEL" \
+  --skeleton-timeout "$SKELETON_TIMEOUT" \
+  --skeleton-abort-after-consecutive-failures "$SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES" \
+  --skeleton-response-format-json \
   --sample-size 128 \
   --val-n 4 \
   --max-new-tokens 16384 \
@@ -213,6 +227,8 @@ RuntimeError: semantic skeleton generation failed for N examples
 ```
 
 并且 `$OUT/skeletons.jsonl` 里失败记录的 `error` 是 `Invalid \escape`，通常说明 API 已经返回内容，但输出的 JSON 字符串里包含未转义的 LaTeX 反斜杠，例如 `\left`、`\frac`、`\pmod`、`\geq` 或 `\$`。这类输出人眼看接近 JSON，但严格 `json.loads` 会拒绝。当前代码已对 skeleton 解析增加容错：会剥离可选的 ```json code fence，并修复 JSON 字符串中的 LaTeX 风格单反斜杠；prompt 里也额外要求 API 尽量使用 plain text 或对反斜杠做 JSON 转义。遇到旧版本生成的失败文件时，建议更新代码后重新跑 Phase 1，或者把已有 `raw_response` 重新解析后生成一份修复后的 `skeletons.jsonl`。
+
+如果失败 sidecar 里是 `error: API returned empty assistant content` 或旧版本的 `Expecting value: line 1 column 1 (char 0)` 且 `raw_response: ""`，含义是 OpenAI-compatible API 返回了成功 HTTP 响应，但 `choices[0].message.content` 为空。新版脚本会把 API 原始 body 截断写入 `raw_response`，并额外写入 `api_finish_reason`、`api_message_keys`、`api_choice_keys`、`api_body_keys`。这类问题优先检查 endpoint/model 是否支持 chat completions、是否支持 `response_format`、以及服务端是否在限流或过载；先用 `SKELETON_API_CONCURRENCY=2` 和 `SKELETON_RESPONSE_FORMAT_JSON=1` 跑小样本验证，必要时把 JSON mode 关掉重试。
 
 当前默认会保留完整产物，不会跳过 rollout entropy。正常跑完后至少应有：
 

@@ -125,7 +125,11 @@ mkdir -p "$FULL_SKEL_OUT"
 export SKELETON_API_KEY="你的_API_KEY"
 export SKELETON_BASE_URL="https://你的-openai-compatible-endpoint/v1"
 export SKELETON_MODEL="deepseek-v4-pro"
-export SKELETON_API_CONCURRENCY=8
+export SKELETON_API_CONCURRENCY=2
+export SKELETON_TIMEOUT=300
+export SKELETON_FLUSH_EVERY=10
+export SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES=50
+export SKELETON_RESPONSE_FORMAT_JSON=1
 
 python eval/generate_semantic_skeletons.py \
   --dataset siyanzhao/Openthoughts_math_30k_opsd \
@@ -134,18 +138,23 @@ python eval/generate_semantic_skeletons.py \
   --skeleton-backend api \
   --skeleton-model "$SKELETON_MODEL" \
   --api-concurrency "$SKELETON_API_CONCURRENCY" \
+  --timeout "$SKELETON_TIMEOUT" \
+  --flush-every "$SKELETON_FLUSH_EVERY" \
+  --abort-after-consecutive-failures "$SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES" \
+  --response-format-json \
   --max-tokens 2048
 ```
 
 不传 `--sample-indices-file` 时，`generate_semantic_skeletons.py` 会遍历完整 train split，直接生成全量 skeleton。`--sample-indices-file` 只用于 ablation、smoke run 或复用固定小样本 manifest。
 
-API backend 会用线程池并发请求，`SKELETON_API_CONCURRENCY` 就是并发数；如果你的 API 有速率限制，可以先把它降到 2 或 4。
+API backend 会用线程池并发请求，`SKELETON_API_CONCURRENCY` 就是并发数。全量生成建议先用 `2` 跑通接口稳定性，再逐步升到 `4` 或 `8`；不要一开始开到几十或上百。`SKELETON_RESPONSE_FORMAT_JSON=1` 会请求 OpenAI-compatible JSON object mode，通常能减少空响应和非 JSON 输出；如果你的 endpoint 不支持这个参数并返回 `HTTP Error 400/422`，把它改成 `0` 或删掉 `--response-format-json` 后重跑。
 
-如果长跑过程中在 `ssl.py` / `http.client.py` 附近报 read timeout、connection reset 或 HTTPS 连接中断，通常是 API endpoint 在高并发下限流、排队或断开连接，不是 dataset 行本身坏了。建议先把并发从 100 降到 8、16 或 32，并提高重试次数：
+如果长跑过程中在 `ssl.py` / `http.client.py` 附近报 read timeout、connection reset 或 HTTPS 连接中断，通常是 API endpoint 在高并发下限流、排队或断开连接，不是 dataset 行本身坏了。建议先把并发从 100 降到 2、4 或 8，并提高重试次数：
 
 ```bash
 export SKELETON_API_CONCURRENCY=16
 export SKELETON_FLUSH_EVERY=10
+export SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES=50
 
 python eval/generate_semantic_skeletons.py \
   --dataset siyanzhao/Openthoughts_math_30k_opsd \
@@ -155,12 +164,15 @@ python eval/generate_semantic_skeletons.py \
   --skeleton-model "$SKELETON_MODEL" \
   --api-concurrency "$SKELETON_API_CONCURRENCY" \
   --flush-every "$SKELETON_FLUSH_EVERY" \
+  --abort-after-consecutive-failures "$SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES" \
   --timeout 300 \
   --max-retries 5 \
   --max-tokens 2048
 ```
 
 脚本默认会 resume，并会先清理已有 `--output-file`：只保留每个 `problem_id` 的第一条 `status=ok` 记录，删除旧的 `status=error` 和重复记录。继续生成时，脚本会先从旧文件最大 `problem_id` 之后往后跑；旧文件里只有 error、没有 ok 的样本会排到后面修复。默认情况下，新运行不会再向主 `skeletons.jsonl` 写 `status=error`；失败尝试会写入 sidecar 文件 `skeletons.failures.jsonl`，失败样本会让出 worker 并推迟到下一轮 retry pass，避免少数坏样本堵住全局并发。只有显式传 `--allow-error-records` 才会恢复旧行为。
+
+如果 sidecar 里出现 `raw_response: ""`，现在的含义是 API 返回了 200，但 `choices[0].message.content` 是空字符串；这通常不是数学样本坏了，而是 endpoint/model 与 chat schema 或 JSON 输出设置不匹配，或者服务端在压力下返回了空 assistant message。新版脚本会额外记录 `api_finish_reason`、`api_message_keys`、`api_choice_keys`、`api_body_keys`，并把完整 API body 截断保存到 `raw_response`。如果连续失败达到 `--abort-after-consecutive-failures`，脚本会停止，让你先检查这些诊断字段；确认只是短暂服务波动时，可以传 `--abort-after-consecutive-failures 0` 关闭保护。
 
 ### 3. 检查 skeleton 数量
 

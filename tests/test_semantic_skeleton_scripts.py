@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 
 class SemanticSkeletonScriptTests(unittest.TestCase):
@@ -154,6 +155,110 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertEqual(record["status"], "error")
         self.assertEqual(record["problem_id"], 12)
         self.assertIn("API read timed out", record["error"])
+
+    def test_call_chat_completion_reports_empty_content_with_api_body(self):
+        from eval.generate_semantic_skeletons import SkeletonAPIResponseError, call_chat_completion
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"id":"cmpl-test","choices":[{"finish_reason":"stop",'
+                    b'"message":{"role":"assistant","content":"",'
+                    b'"reasoning_content":"internal trace"}}],"usage":{"total_tokens":9}}'
+                )
+
+        with patch("eval.generate_semantic_skeletons.urllib.request.urlopen", return_value=FakeResponse()):
+            with self.assertRaises(SkeletonAPIResponseError) as raised:
+                call_chat_completion(
+                    api_key="key",
+                    base_url="https://example.test/v1",
+                    model="deepseek-v4-pro",
+                    answer="4",
+                    reference_solution="Compute 2+2.",
+                    temperature=0.0,
+                    max_tokens=128,
+                    timeout=1.0,
+                )
+
+        self.assertIn("empty assistant content", str(raised.exception))
+        self.assertIn("finish_reason=stop", str(raised.exception))
+        self.assertIn('"reasoning_content"', raised.exception.raw_response)
+        self.assertEqual(raised.exception.details["finish_reason"], "stop")
+
+    def test_call_chat_completion_can_request_json_response_format(self):
+        from eval.generate_semantic_skeletons import call_chat_completion
+
+        captured_payloads = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"choices":[{"finish_reason":"stop","message":{"content":'
+                    b'"{\\"final_answer\\":\\"4\\",\\"key_objects\\":[],'
+                    b'\\"subgoals\\":[],\\"critical_intermediates\\":[],'
+                    b'\\"theorem_tags\\":[],\\"checks\\":[]}"}}]}'
+                )
+
+        def fake_urlopen(request, timeout):
+            captured_payloads.append(__import__("json").loads(request.data.decode("utf-8")))
+            return FakeResponse()
+
+        with patch("eval.generate_semantic_skeletons.urllib.request.urlopen", side_effect=fake_urlopen):
+            call_chat_completion(
+                api_key="key",
+                base_url="https://example.test/v1",
+                model="deepseek-v4-pro",
+                answer="4",
+                reference_solution="Compute 2+2.",
+                temperature=0.0,
+                max_tokens=128,
+                timeout=1.0,
+                response_format_json=True,
+            )
+
+        self.assertEqual(captured_payloads[0]["response_format"], {"type": "json_object"})
+
+    def test_generate_skeleton_record_keeps_api_diagnostics_for_empty_content_error(self):
+        from eval.generate_semantic_skeletons import SkeletonAPIResponseError, generate_skeleton_record
+
+        def empty_content_completion(*, answer, reference_solution):
+            raise SkeletonAPIResponseError(
+                "API returned empty assistant content; finish_reason=stop",
+                raw_response='{"choices":[{"finish_reason":"stop","message":{"content":""}}]}',
+                details={"finish_reason": "stop", "message_keys": ["content"]},
+            )
+
+        record = generate_skeleton_record(
+            problem_id=13,
+            example={"answer": "4", "solution": "Compute 2+2."},
+            api_key=None,
+            base_url=None,
+            model="deepseek-v4-pro",
+            temperature=0.0,
+            max_tokens=128,
+            timeout=1.0,
+            max_retries=0,
+            skeleton_backend="api",
+            completion_fn=empty_content_completion,
+        )
+
+        self.assertEqual(record["status"], "error")
+        self.assertIn("empty assistant content", record["error"])
+        self.assertEqual(record["raw_response"], '{"choices":[{"finish_reason":"stop","message":{"content":""}}]}')
+        self.assertEqual(record["api_finish_reason"], "stop")
+        self.assertEqual(record["api_message_keys"], ["content"])
 
     def test_generate_skeleton_records_can_parallelize_api_calls_and_keep_order(self):
         from eval.generate_semantic_skeletons import generate_skeleton_records
@@ -410,6 +515,39 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertEqual([record["problem_id"] for record in records], [1, 2, 0])
         self.assertEqual(failures, [(0, 1)])
 
+    def test_iter_skeleton_records_aborts_after_too_many_consecutive_failures(self):
+        from eval.generate_semantic_skeletons import iter_skeleton_records
+
+        def empty_completion(*, answer, reference_solution):
+            return ""
+
+        with self.assertRaisesRegex(RuntimeError, "3 consecutive skeleton generation failures"):
+            list(
+                iter_skeleton_records(
+                    indices=[0, 1, 2, 3],
+                    rows=[
+                        {"answer": "0", "solution": "bad"},
+                        {"answer": "1", "solution": "bad"},
+                        {"answer": "2", "solution": "bad"},
+                        {"answer": "3", "solution": "bad"},
+                    ],
+                    api_key=None,
+                    base_url=None,
+                    model="deepseek-v4-pro",
+                    temperature=0.0,
+                    max_tokens=128,
+                    timeout=1.0,
+                    max_retries=0,
+                    skeleton_backend="api",
+                    completion_fn=empty_completion,
+                    api_concurrency=1,
+                    retry_until_ok=True,
+                    retry_delay=0.0,
+                    max_retry_delay=0.0,
+                    abort_after_consecutive_failures=3,
+                )
+            )
+
     def test_default_failure_file_for_output_uses_sidecar_name(self):
         from eval.generate_semantic_skeletons import default_failure_file_for_output
 
@@ -526,6 +664,21 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertIn('--skeleton-backend "$SKELETON_BACKEND"', script)
         self.assertIn('--skeleton-model "$SKELETON_MODEL_FOR_RUN"', script)
         self.assertIn('CUDA_VISIBLE_DEVICES="$SKELETON_GPUS"', script)
+
+    def test_run_script_exposes_api_skeleton_stability_controls(self):
+        from pathlib import Path
+
+        script = Path("scripts/run_semantic_skeleton_ablation.sh").read_text(encoding="utf-8")
+
+        self.assertIn('SKELETON_TIMEOUT="${SKELETON_TIMEOUT:-300}"', script)
+        self.assertIn('SKELETON_RESPONSE_FORMAT_JSON="${SKELETON_RESPONSE_FORMAT_JSON:-0}"', script)
+        self.assertIn('SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES="${SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES:-50}"', script)
+        self.assertIn("--skeleton-response-format-json)", script)
+        self.assertIn("--skeleton-no-response-format-json)", script)
+        self.assertIn("--skeleton-abort-after-consecutive-failures)", script)
+        self.assertIn('--timeout "$SKELETON_TIMEOUT"', script)
+        self.assertIn('--abort-after-consecutive-failures "$SKELETON_ABORT_AFTER_CONSECUTIVE_FAILURES"', script)
+        self.assertIn("SKELETON_GENERATE_ARGS+=(--response-format-json)", script)
 
     def test_reference_prompt_keeps_solution_and_exposes_ground_truth(self):
         from eval.quick_opsd_common import build_reference_user_message
