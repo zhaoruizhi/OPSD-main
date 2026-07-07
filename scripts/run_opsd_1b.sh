@@ -1,8 +1,15 @@
-accelerate launch \
+#!/usr/bin/env bash
+set -euo pipefail
+
+TRAIN_GPU_IDS="${TRAIN_GPU_IDS:-0,1,2,3}"
+NUM_PROCESSES="${NUM_PROCESSES:-4}"
+MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-12949}"
+
+CUDA_VISIBLE_DEVICES="$TRAIN_GPU_IDS" accelerate launch \
     --config_file accelerate.yaml \
-    --num_processes 4 \
+    --num_processes "$NUM_PROCESSES" \
     --gradient_accumulation_steps 2 \
-    --main_process_port 12949 \
+    --main_process_port "$MAIN_PROCESS_PORT" \
     opsd_train.py \
     --model_name_or_path /data0/shared/Qwen3-1.7B \
     --learning_rate 5e-6 \
@@ -34,4 +41,5 @@ accelerate launch \
     --lmbda 1 \
     --fixed_teacher \
     --jsd_token_clip 0.05 \
+    --report_to wandb \
     --wandb_project OPSD

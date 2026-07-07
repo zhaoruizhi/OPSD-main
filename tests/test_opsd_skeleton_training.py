@@ -199,11 +199,44 @@ class OpsdSkeletonTrainingTests(unittest.TestCase):
         script = Path("scripts/run_opsd_1b_skeleton.sh").read_text(encoding="utf-8")
 
         self.assertIn("SKELETON_FILE=", script)
+        self.assertIn('TRAIN_GPU_IDS="${TRAIN_GPU_IDS:-0,1,2,3}"', script)
+        self.assertIn('NUM_PROCESSES="${NUM_PROCESSES:-4}"', script)
+        self.assertIn('MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-12949}"', script)
+        self.assertIn('CUDA_VISIBLE_DEVICES="$TRAIN_GPU_IDS" accelerate launch', script)
+        self.assertIn('--num_processes "$NUM_PROCESSES"', script)
+        self.assertIn('--main_process_port "$MAIN_PROCESS_PORT"', script)
         self.assertIn("--run_config qwen31b_gen1024_skeleton_fixteacher_temp11_forwardbeta0_clip005", script)
         self.assertIn("--teacher_context_mode skeleton", script)
         self.assertIn('--skeleton_file "$SKELETON_FILE"', script)
         self.assertIn("--skeleton_subset_policy error", script)
         self.assertIn("--report_to wandb", script)
+
+    def test_reference_run_script_supports_gpu_selection_and_wandb(self):
+        script = Path("scripts/run_opsd_1b.sh").read_text(encoding="utf-8")
+
+        self.assertIn('TRAIN_GPU_IDS="${TRAIN_GPU_IDS:-0,1,2,3}"', script)
+        self.assertIn('NUM_PROCESSES="${NUM_PROCESSES:-4}"', script)
+        self.assertIn('MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-12949}"', script)
+        self.assertIn('CUDA_VISIBLE_DEVICES="$TRAIN_GPU_IDS" accelerate launch', script)
+        self.assertIn('--num_processes "$NUM_PROCESSES"', script)
+        self.assertIn('--main_process_port "$MAIN_PROCESS_PORT"', script)
+        self.assertIn("--run_config qwen31b_gen1024_fixteacher_temp11_forwardbeta0_clip005", script)
+        self.assertIn("--report_to wandb", script)
+        self.assertIn("--wandb_project OPSD", script)
+
+    def test_training_doc_describes_full_reference_vs_skeleton_workflow(self):
+        doc = Path("docs/opsd_skeleton_training_zh.md").read_text(encoding="utf-8")
+
+        self.assertNotIn("Smoke run", doc)
+        self.assertIn("## 全量训练对比：reference baseline vs skeleton", doc)
+        self.assertIn("wandb login", doc)
+        self.assertIn("TRAIN_GPU_IDS=0,1,2,3", doc)
+        self.assertIn("bash scripts/run_opsd_1b.sh", doc)
+        self.assertIn("bash scripts/run_opsd_1b_skeleton.sh", doc)
+        self.assertIn("loss", doc)
+        self.assertIn("on_policy_loss", doc)
+        self.assertIn("grad_norm", doc)
+        self.assertIn("learning_rate", doc)
 
 
 if __name__ == "__main__":
