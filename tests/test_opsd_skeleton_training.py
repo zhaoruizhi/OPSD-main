@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -193,6 +194,42 @@ class OpsdSkeletonTrainingTests(unittest.TestCase):
         self.assertIn('"subgoals"', skeleton_block)
         self.assertIn("evaluate the sum", skeleton_block)
         self.assertNotIn("final_answer", skeleton_block)
+        self.assertNotIn("Full reference solution must not appear.", teacher_content)
+
+    def test_collator_skeleton_mode_accepts_serialized_skeleton(self):
+        from data_collator import SelfDistillationDataCollator
+
+        tokenizer = FakeTokenizer()
+        collator = SelfDistillationDataCollator(
+            tokenizer=tokenizer,
+            teacher_context_mode="skeleton",
+            reason_first=False,
+        )
+
+        collator(
+            [
+                {
+                    "problem": "Compute 2+2.",
+                    "solution": "Full reference solution must not appear.",
+                    "ground_truth": "4",
+                    "semantic_skeleton": json.dumps(
+                        {
+                            "final_answer": "4",
+                            "key_objects": [{"name": "the expression 2+2"}],
+                            "subgoals": ["evaluate the sum"],
+                            "critical_intermediates": ["2+2=4"],
+                            "theorem_tags": [],
+                            "checks": [],
+                        }
+                    ),
+                }
+            ]
+        )
+
+        teacher_content = tokenizer.chat_calls[1]["messages"][0]["content"]
+        self.assertIn("Final answer: 4", teacher_content)
+        self.assertIn('"key_objects"', teacher_content)
+        self.assertIn('"name": "the expression 2+2"', teacher_content)
         self.assertNotIn("Full reference solution must not appear.", teacher_content)
 
     def test_skeleton_run_script_uses_skeleton_mode_and_distinct_run_config(self):

@@ -6,7 +6,9 @@ from typing import Any, Iterable
 SKELETON_SUBSET_POLICIES = {"error", "filter"}
 
 
-def normalize_semantic_skeleton(skeleton: dict[str, Any]) -> dict[str, Any]:
+def normalize_semantic_skeleton(skeleton: Any) -> dict[str, Any]:
+    if isinstance(skeleton, str):
+        skeleton = json.loads(skeleton)
     if not isinstance(skeleton, dict):
         raise ValueError("semantic skeleton must be a JSON object")
 
@@ -26,6 +28,14 @@ def normalize_semantic_skeleton(skeleton: dict[str, Any]) -> dict[str, Any]:
         "theorem_tags": _list_or_empty(skeleton.get("theorem_tags")),
         "checks": _list_or_empty(checks),
     }
+
+
+def serialize_semantic_skeleton(skeleton: Any) -> str:
+    return json.dumps(
+        normalize_semantic_skeleton(skeleton),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
 def read_skeleton_training_file(path: str | Path) -> dict[int, dict[str, Any]]:

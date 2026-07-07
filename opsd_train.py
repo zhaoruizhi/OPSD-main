@@ -18,7 +18,7 @@ from trl import (
 )
 from trl.experimental.gold import GOLDConfig
 from opsd_trainer import OPSDTrainer
-from opsd_skeleton import attach_skeletons_to_training_rows
+from opsd_skeleton import attach_skeletons_to_training_rows, serialize_semantic_skeleton
 
 # Enable logging in a Hugging Face Space
 os.environ.setdefault("TRACKIO_SPACE_ID", "trl-trackio")
@@ -308,6 +308,9 @@ if __name__ == "__main__":
             script_args.skeleton_file,
             subset_policy=script_args.skeleton_subset_policy,
         )
+        for row in skeleton_rows:
+            # Keep Arrow schema simple; skeleton list items may mix strings and JSON objects.
+            row["semantic_skeleton"] = serialize_semantic_skeleton(row["semantic_skeleton"])
         train_dataset = Dataset.from_list(skeleton_rows)
         print(f"\n{'='*80}")
         print("SKELETON TEACHER CONTEXT ENABLED")
