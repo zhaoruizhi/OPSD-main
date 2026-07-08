@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 .vscode/
 models/
+eval/eval_results/
 *.safetensors
 *.bin
 *.pt
