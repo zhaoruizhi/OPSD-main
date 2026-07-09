@@ -11,13 +11,13 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPU_IDS" accelerate launch \
     --gradient_accumulation_steps 2 \
     --main_process_port "$MAIN_PROCESS_PORT" \
     opsd_train.py \
-    --model_name_or_path /data0/shared/Qwen3-1.7B \
+    --model_name_or_path /home/ruizzhao/OPSD-main/models/Qwen3-1.7B \
     --learning_rate 5e-6 \
     --max_grad_norm 0.1 \
     --per_device_train_batch_size 4 \
     --gradient_checkpointing \
     --gradient_accumulation_steps 2 \
-    --output_dir  /data0/siyanz/opsd/ \
+    --output_dir  /home/ruizzhao/OPSD-main/outputs/opsd/ \
     --run_config qwen31b_gen1024_fixteacher_temp11_forwardbeta0_clip005 \
     --num_train_epochs 30 \
     --max_completion_length 1024 \
