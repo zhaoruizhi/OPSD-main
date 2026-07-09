@@ -1,4 +1,6 @@
+import sys
 import unittest
+from unittest.mock import patch
 
 
 class QuickOpsdScriptShapeTests(unittest.TestCase):
@@ -16,6 +18,30 @@ class QuickOpsdScriptShapeTests(unittest.TestCase):
         self.assertEqual(specs["teacher_reference"].prompt_kind, "reference")
         self.assertTrue(specs["teacher_skeleton"].enable_thinking)
         self.assertEqual(specs["teacher_skeleton"].prompt_kind, "skeleton")
+
+    def test_rollout_parse_args_supports_student_thinking_and_checkpoint(self):
+        from eval.quick_rollout_openthoughts import parse_args
+
+        argv = [
+            "quick_rollout_openthoughts.py",
+            "--base-model",
+            "/models/Qwen3-1.7B",
+            "--checkpoint-dir",
+            "/runs/checkpoint-100",
+            "--summary-file",
+            "summary.json",
+            "--output-file",
+            "rollouts.jsonl",
+            "--student-enable-thinking",
+        ]
+
+        with patch.object(sys, "argv", argv):
+            args = parse_args()
+
+        self.assertEqual(args.model, "/models/Qwen3-1.7B")
+        self.assertEqual(args.base_model, "/models/Qwen3-1.7B")
+        self.assertEqual(args.checkpoint_dir, "/runs/checkpoint-100")
+        self.assertTrue(args.student_enable_thinking)
 
     def test_prefix_condition_specs_match_plan(self):
         from eval.quick_prefix_intervention import build_prefix_condition_specs

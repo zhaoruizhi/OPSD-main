@@ -11,6 +11,7 @@ from eval.quick_logit_probe import (
     compare_contexts,
     completed_logit_record_keys,
     context_prompt_ids_for_condition,
+    contrast_specs_from_args,
     select_full_response_cases,
     shard_cases,
     target_token_ids_for_case,
@@ -69,6 +70,50 @@ class QuickLogitProbeTests(unittest.TestCase):
 
         self.assertTrue(args.skip_rollout_entropy)
         self.assertEqual(args.hf_device_map, "auto")
+
+    def test_parse_args_supports_student_teacher_category_kl(self):
+        from eval.quick_logit_probe import parse_args
+
+        argv = [
+            "quick_logit_probe.py",
+            "--base-model",
+            "/models/Qwen3-1.7B",
+            "--checkpoint-dir",
+            "/runs/checkpoint-100",
+            "--rollout-file",
+            "rollouts.jsonl",
+            "--output-file",
+            "student_teacher_kl.jsonl",
+            "--summary-file",
+            "student_teacher_kl_summary.json",
+            "--trajectory-condition",
+            "student",
+            "--baseline-condition",
+            "student",
+            "--teacher-condition",
+            "teacher_reference",
+            "--teacher-condition",
+            "teacher_skeleton",
+            "--student-enable-thinking",
+        ]
+
+        with patch.object(sys, "argv", argv):
+            args = parse_args()
+
+        self.assertEqual(args.model, "/models/Qwen3-1.7B")
+        self.assertEqual(args.base_model, "/models/Qwen3-1.7B")
+        self.assertEqual(args.checkpoint_dir, "/runs/checkpoint-100")
+        self.assertEqual(args.trajectory_condition, ["student"])
+        self.assertEqual(args.baseline_condition, "student")
+        self.assertEqual(args.teacher_condition, ["teacher_reference", "teacher_skeleton"])
+        self.assertTrue(args.student_enable_thinking)
+        self.assertEqual(
+            contrast_specs_from_args(args),
+            [
+                ("teacher_reference_vs_student", "student", "teacher_reference"),
+                ("teacher_skeleton_vs_student", "student", "teacher_skeleton"),
+            ],
+        )
 
     def test_select_full_response_cases_filters_to_requested_sample_index(self):
         records = [
@@ -238,10 +283,69 @@ class QuickLogitProbeTests(unittest.TestCase):
         self.assertEqual(prompt_ids, [7, 8, 9])
         self.assertEqual(source, "prompt_token_ids")
 
+    def test_context_prompt_reconstruction_uses_record_student_thinking_mode(self):
+        class FakeTokenizer:
+            def __call__(self, text, add_special_tokens=False):
+                return {"input_ids": [1, 2, 3] if "thinking=True" in text else [4, 5, 6]}
+
+            def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True, enable_thinking=False):
+                return f"thinking={enable_thinking}:{messages[0]['content']}"
+
+        prompt_ids, source = context_prompt_ids_for_condition(
+            tokenizer=FakeTokenizer(),
+            case={
+                "problem": "2+2?",
+                "context_records": {
+                    "student": {
+                        "condition": "student",
+                        "problem": "2+2?",
+                        "enable_thinking": True,
+                    }
+                },
+            },
+            condition="student",
+            skeletons={},
+        )
+
+        self.assertEqual(prompt_ids, [1, 2, 3])
+        self.assertEqual(source, "reconstructed_prompt_text")
+
+    def test_missing_teacher_context_reconstruction_keeps_teacher_thinking_enabled(self):
+        class FakeTokenizer:
+            def __call__(self, text, add_special_tokens=False):
+                return {"input_ids": [1] if "thinking=True" in text else [0]}
+
+            def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True, enable_thinking=False):
+                return f"thinking={enable_thinking}:{messages[0]['content']}"
+
+        prompt_ids, source = context_prompt_ids_for_condition(
+            tokenizer=FakeTokenizer(),
+            case={
+                "problem_id": 1,
+                "problem": "2+2?",
+                "solution": "2+2=4",
+                "ground_truth": "4",
+                "condition": "student",
+                "enable_thinking": False,
+                "context_records": {
+                    "student": {
+                        "condition": "student",
+                        "problem": "2+2?",
+                        "enable_thinking": False,
+                    }
+                },
+            },
+            condition="teacher_reference",
+            skeletons={},
+        )
+
+        self.assertEqual(prompt_ids, [1])
+        self.assertEqual(source, "reconstructed_prompt_text")
+
     def test_compare_contexts_uses_hf_logprob_rows(self):
         class FakeTokenizer:
             def decode(self, token_ids, skip_special_tokens=False):
-                return {0: "A", 1: "B"}[token_ids[0]]
+                return {0: " wait", 1: " fraction"}[token_ids[0]]
 
         student_log_probs = [
             {0: -1.6094379124341003, 1: -0.2231435513142097},
@@ -269,8 +373,12 @@ class QuickLogitProbeTests(unittest.TestCase):
         self.assertAlmostEqual(record["kl_per_token"][0], 0.8317766166719344)
         self.assertAlmostEqual(record["teacher_entropy_per_token"][0], 0.5004024235381879)
         self.assertEqual(record["top1_agreement"], 0.0)
-        self.assertEqual(record["top_kl_positions"][0]["teacher_top_tokens"], [{"token": "A", "prob": 0.8, "logprob": -0.2231435513142097}])
-        self.assertEqual(record["top_kl_positions"][0]["base_top_tokens"], [{"token": "B", "prob": 0.8, "logprob": -0.2231435513142097}])
+        self.assertEqual(record["token_category_kl"]["style"]["num_tokens"], 1)
+        self.assertAlmostEqual(record["token_category_kl"]["style"]["mean_kl"], 0.8317766166719344)
+        self.assertEqual(record["token_category_kl"]["math"]["num_tokens"], 1)
+        self.assertAlmostEqual(record["token_category_kl"]["math"]["mean_kl"], 0.8317766166719344)
+        self.assertEqual(record["top_kl_positions"][0]["teacher_top_tokens"], [{"token": " wait", "prob": 0.8, "logprob": -0.2231435513142097}])
+        self.assertEqual(record["top_kl_positions"][0]["base_top_tokens"], [{"token": " fraction", "prob": 0.8, "logprob": -0.2231435513142097}])
 
     def test_records_can_report_completion_token_id_source(self):
         class FakeTokenizer:
@@ -345,6 +453,11 @@ class QuickLogitProbeTests(unittest.TestCase):
                     "mean_teacher_entropy": 1.0,
                     "mean_student_entropy": 2.0,
                     "mean_delta_entropy": -1.0,
+                    "token_category_kl": {
+                        "style": {"num_tokens": 2, "sum_kl": 1.0, "mean_kl": 0.5},
+                        "math": {"num_tokens": 1, "sum_kl": 0.6, "mean_kl": 0.6},
+                        "other": {"num_tokens": 1, "sum_kl": 0.1, "mean_kl": 0.1},
+                    },
                 },
                 {
                     "record_type": "kl_contrast",
@@ -359,6 +472,11 @@ class QuickLogitProbeTests(unittest.TestCase):
                     "mean_teacher_entropy": 3.0,
                     "mean_student_entropy": 4.0,
                     "mean_delta_entropy": -1.0,
+                    "token_category_kl": {
+                        "style": {"num_tokens": 1, "sum_kl": 0.2, "mean_kl": 0.2},
+                        "math": {"num_tokens": 3, "sum_kl": 0.3, "mean_kl": 0.1},
+                        "other": {"num_tokens": 2, "sum_kl": 0.4, "mean_kl": 0.2},
+                    },
                 },
                 {"record_type": "rollout_entropy", "condition": "student", "mean_entropy": 1.0},
                 {"record_type": "rollout_entropy", "condition": "student", "mean_entropy": 3.0},
@@ -371,6 +489,12 @@ class QuickLogitProbeTests(unittest.TestCase):
         self.assertEqual(contrast["mean_teacher_entropy"], 2.0)
         self.assertEqual(contrast["mean_student_entropy"], 3.0)
         self.assertEqual(contrast["mean_delta_entropy"], -1.0)
+        self.assertAlmostEqual(contrast["token_category_kl"]["style"]["mean_kl"], 0.4)
+        self.assertEqual(contrast["token_category_kl"]["style"]["num_tokens"], 3)
+        self.assertAlmostEqual(contrast["token_category_kl"]["math"]["mean_kl"], 0.225)
+        self.assertEqual(contrast["token_category_kl"]["math"]["num_tokens"], 4)
+        self.assertAlmostEqual(contrast["token_category_kl"]["other"]["mean_kl"], 0.16666666666666666)
+        self.assertEqual(contrast["token_category_kl"]["other"]["num_tokens"], 3)
         self.assertEqual(summary["rollout_entropy"]["student"]["mean_entropy"], 2.0)
         self.assertEqual(summary["rollout_entropy"]["teacher_base"]["mean_entropy"], 4.0)
         self.assertEqual(summary["rollout_entropy"]["teacher_skeleton"]["mean_entropy"], 5.0)

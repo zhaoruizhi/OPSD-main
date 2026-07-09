@@ -28,6 +28,7 @@ try:
         render_prefill_prompt,
         shard_items,
         summarize_logit_records,
+        summarize_token_category_values,
         write_json,
     )
 except ImportError:  # pragma: no cover
@@ -46,6 +47,7 @@ except ImportError:  # pragma: no cover
         render_prefill_prompt,
         shard_items,
         summarize_logit_records,
+        summarize_token_category_values,
         write_json,
     )
 
@@ -78,6 +80,17 @@ def build_logit_context_specs() -> list[LogitContextSpec]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run OPSD quick logits distribution probe.")
     parser.add_argument("--model", type=str, default="/data0/shared/Qwen3-1.7B")
+    parser.add_argument(
+        "--base-model",
+        dest="base_model",
+        type=str,
+        help="Base model path. Alias for --model when probing a LoRA checkpoint.",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        help="Optional PEFT/LoRA checkpoint directory to load on top of --base-model/--model.",
+    )
     parser.add_argument("--rollout-file", type=str)
     parser.add_argument("--prefix-file", type=str)
     parser.add_argument("--skeleton-file", type=str)
@@ -91,6 +104,21 @@ def parse_args() -> argparse.Namespace:
         action="append",
         choices=["student", "teacher_base", "teacher_reference", "teacher_skeleton"],
         help="Full rollout condition to use as a target trajectory. Repeatable.",
+    )
+    parser.add_argument(
+        "--baseline-condition",
+        choices=["student", "teacher_base", "teacher_reference", "teacher_skeleton"],
+        default="teacher_base",
+        help="Context used as KL baseline P_student/base. Defaults to teacher_base for legacy probes.",
+    )
+    parser.add_argument(
+        "--teacher-condition",
+        action="append",
+        choices=["student", "teacher_base", "teacher_reference", "teacher_skeleton"],
+        help=(
+            "Teacher context to compare against --baseline-condition. Repeatable. "
+            "Defaults to teacher_reference and teacher_skeleton."
+        ),
     )
     parser.add_argument("--probe-tokens", type=int, default=0)
     parser.add_argument(
@@ -106,6 +134,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-kl-positions", type=int, default=20)
     parser.add_argument("--first-window-tokens", type=int, default=32)
     parser.add_argument("--max-context-tokens", type=int, default=20000)
+    parser.add_argument(
+        "--student-enable-thinking",
+        action="store_true",
+        help="Use thinking chat template when reconstructing student prompts without stored prompt_token_ids.",
+    )
+    parser.add_argument(
+        "--require-context-rollouts",
+        action="store_true",
+        help=(
+            "Require rollout records for baseline/teacher contexts before probing. By default only the "
+            "target trajectory rollout is required and missing context prompts are reconstructed."
+        ),
+    )
     parser.add_argument(
         "--skip-rollout-entropy",
         action="store_true",
@@ -124,6 +165,12 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     args = parser.parse_args()
+    if args.base_model:
+        args.model = args.base_model
+    else:
+        args.base_model = args.model
+    if args.teacher_condition is None:
+        args.teacher_condition = ["teacher_reference", "teacher_skeleton"]
     if args.trajectory_condition is None:
         args.trajectory_condition = ["teacher_base"]
     if args.summarize_only:
@@ -146,6 +193,28 @@ def main() -> None:
 
     run_logit_probe(args)
     write_json(args.summary_file, summarize_logit_records(read_jsonl(args.output_file)))
+
+
+def contrast_specs_from_args(args: argparse.Namespace) -> list[tuple[str, str, str]]:
+    specs = []
+    baseline_condition = str(args.baseline_condition)
+    for teacher_condition in args.teacher_condition:
+        teacher_condition = str(teacher_condition)
+        if teacher_condition == baseline_condition:
+            continue
+        specs.append((f"{teacher_condition}_vs_{baseline_condition}", baseline_condition, teacher_condition))
+    if not specs:
+        raise ValueError("At least one --teacher-condition must differ from --baseline-condition")
+    return specs
+
+
+def context_conditions_from_contrasts(contrast_specs: list[tuple[str, str, str]]) -> list[str]:
+    conditions: list[str] = []
+    for _, baseline_condition, teacher_condition in contrast_specs:
+        for condition in (baseline_condition, teacher_condition):
+            if condition not in conditions:
+                conditions.append(condition)
+    return conditions
 
 
 def shard_cases(cases: list[dict[str, Any]], shard_id: int, num_shards: int) -> list[dict[str, Any]]:
@@ -177,6 +246,15 @@ def append_jsonl_record(path: str | Path, record: dict[str, Any]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def lora_adapter_exists(path: str | Path | None) -> bool:
+    if not path:
+        return False
+    checkpoint_path = Path(path)
+    return (checkpoint_path / "adapter_model.safetensors").exists() or (
+        checkpoint_path / "adapter_model.bin"
+    ).exists()
 
 
 def _coerce_token_ids(value: Any) -> list[int]:
@@ -211,14 +289,18 @@ def select_full_response_cases(
     trajectory_conditions: list[str],
     trajectory_sample_index: int | None = None,
     context_conditions: list[str] | None = None,
+    require_context_conditions: bool = True,
 ) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
     required_conditions = set(trajectory_conditions)
-    if context_conditions is not None:
+    if context_conditions is not None and require_context_conditions:
         required_conditions.update(context_conditions)
+    accepted_conditions = set(required_conditions)
+    if context_conditions is not None:
+        accepted_conditions.update(context_conditions)
     for record in records:
         condition = str(record.get("condition") or "")
-        if condition not in required_conditions:
+        if condition not in accepted_conditions:
             continue
         if not record.get("full_generation") and not _coerce_token_ids(record.get("completion_token_ids")):
             continue
@@ -253,7 +335,11 @@ def select_full_response_cases(
             problem_id = record.get("problem_id")
             full_generation = str(record.get("full_generation") or "")
             attached_contexts = (
-                {condition: by_condition[condition] for condition in context_conditions}
+                {
+                    condition: by_condition[condition]
+                    for condition in context_conditions
+                    if condition in by_condition
+                }
                 if context_conditions is not None
                 else {}
             )
@@ -306,6 +392,7 @@ def context_prompt_ids_for_condition(
     case: dict[str, Any],
     condition: str,
     skeletons: dict[int, dict[str, Any]],
+    student_enable_thinking: bool = False,
 ) -> tuple[list[int], str]:
     context_records = case.get("context_records")
     record = context_records.get(condition, case) if isinstance(context_records, dict) else case
@@ -318,6 +405,7 @@ def context_prompt_ids_for_condition(
         case=case,
         condition=condition,
         skeletons=skeletons,
+        student_enable_thinking=student_enable_thinking,
     )
     encoded = tokenizer(prompt_text, add_special_tokens=False)
     return _coerce_token_ids(encoded.get("input_ids")), PROMPT_TOKEN_SOURCE_TEXT
@@ -327,7 +415,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     model_kwargs: dict[str, Any] = {
         "trust_remote_code": True,
@@ -339,13 +427,24 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
         model_kwargs["device_map"] = {"": "cuda:0"}
     elif args.hf_device_map == "auto":
         model_kwargs["device_map"] = "auto"
-    model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs)
+    model = AutoModelForCausalLM.from_pretrained(args.base_model, **model_kwargs)
+    if args.checkpoint_dir:
+        if not lora_adapter_exists(args.checkpoint_dir):
+            raise ValueError(
+                f"--checkpoint-dir does not contain adapter_model.safetensors or adapter_model.bin: "
+                f"{args.checkpoint_dir}"
+            )
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(model, args.checkpoint_dir)
     model.eval()
     first_param_device = str(next(model.parameters()).device)
     print(
         json.dumps(
             {
                 "event": "hf_probe_model_loaded",
+                "base_model": args.base_model,
+                "checkpoint_dir": args.checkpoint_dir,
                 "cuda_available": bool(torch.cuda.is_available()),
                 "cuda_device_count": int(torch.cuda.device_count()) if torch.cuda.is_available() else 0,
                 "dtype": str(dtype),
@@ -366,20 +465,19 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.rollout_file:
         rollout_records = read_jsonl(args.rollout_file)
         trajectory_sample_index = args.trajectory_sample_index if args.trajectory_sample_index >= 0 else None
+        contrast_specs = contrast_specs_from_args(args)
+        context_conditions = context_conditions_from_contrasts(contrast_specs)
         cases = select_full_response_cases(
             rollout_records,
             args.logit_size,
             args.seed,
             list(args.trajectory_condition),
             trajectory_sample_index=trajectory_sample_index,
-            context_conditions=["teacher_base", "teacher_reference", "teacher_skeleton"],
+            context_conditions=context_conditions,
+            require_context_conditions=args.require_context_rollouts,
         )
         cases = shard_cases(cases, args.shard_id, args.num_shards)
         for case in cases:
-            contrast_specs = [
-                ("teacher_reference_vs_teacher_base", "teacher_base", "teacher_reference"),
-                ("teacher_skeleton_vs_teacher_base", "teacher_base", "teacher_skeleton"),
-            ]
             pending = [
                 item
                 for item in contrast_specs
@@ -406,6 +504,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                         case=case,
                         condition=condition,
                         skeletons=skeletons,
+                        student_enable_thinking=args.student_enable_thinking,
                     )
                     condition_log_probs[condition] = compute_target_log_probs_hf(
                         model=model,
@@ -460,6 +559,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                     case=case,
                     condition=condition,
                     skeletons=skeletons,
+                    student_enable_thinking=args.student_enable_thinking,
                 )
                 log_probs = compute_target_log_probs_hf(
                     model=model,
@@ -536,6 +636,7 @@ def rollout_context_prompt(
     case: dict[str, Any],
     condition: str,
     skeletons: dict[int, dict[str, Any]],
+    student_enable_thinking: bool = False,
 ) -> str:
     context_records = case.get("context_records")
     record = context_records.get(condition, case) if isinstance(context_records, dict) else case
@@ -555,10 +656,18 @@ def rollout_context_prompt(
     else:
         raise ValueError(f"Unknown rollout context condition: {condition}")
 
+    record_condition = str(record.get("condition") or "")
+    if record_condition == condition and "enable_thinking" in record:
+        enable_thinking = bool(record.get("enable_thinking"))
+    elif condition == "student":
+        enable_thinking = bool(student_enable_thinking)
+    else:
+        enable_thinking = True
+
     return render_chat_prompt(
         tokenizer,
         user_message,
-        enable_thinking=(condition != "student"),
+        enable_thinking=enable_thinking,
     )
 
 
@@ -801,6 +910,7 @@ def compare_contexts(
     token_texts = [tokenizer.decode([token_id], skip_special_tokens=False) for token_id in target_ids]
     style_mask = [is_style_token(text) for text in token_texts]
     math_mask = [is_math_token(text) for text in token_texts]
+    token_category_kl = summarize_token_category_values(token_texts, kl_values)
     total_kl = float(sum(kl_values))
     first_window = min(first_window_tokens, len(target_ids))
     delta_entropy_values = [
@@ -836,6 +946,7 @@ def compare_contexts(
         "mean_delta_entropy": sum(delta_entropy_values) / len(delta_entropy_values) if delta_entropy_values else 0.0,
         "style_kl_share": _masked_share(kl_values, style_mask, total_kl),
         "math_kl_share": _masked_share(kl_values, math_mask, total_kl),
+        "token_category_kl": token_category_kl,
         "first_window_kl_share": (
             sum(kl_values[:first_window]) / total_kl if total_kl > 0 and first_window else 0.0
         ),

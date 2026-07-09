@@ -55,6 +55,24 @@ class QuickOpsdRunScriptTests(unittest.TestCase):
             script.index('"${FIRST_ERROR_RESUME_ARGS[@]}"'),
         )
 
+    def test_student_teacher_category_kl_script_runs_ten_problem_student_probe(self):
+        script = Path("scripts/run_student_teacher_category_kl.sh").read_text(encoding="utf-8")
+
+        self.assertIn("SAMPLE_SIZE=10", script)
+        self.assertIn("VAL_N=1", script)
+        self.assertIn("STUDENT_TM=", script)
+        self.assertIn('MAX_NEW_TOKENS="1024"', script)
+        self.assertIn('MAX_NEW_TOKENS="16384"', script)
+        self.assertIn("--gpu-ids)", script)
+        self.assertIn("--condition student", script)
+        self.assertIn("--student-enable-thinking", script)
+        self.assertIn("--trajectory-condition student", script)
+        self.assertIn("--baseline-condition student", script)
+        self.assertIn("--teacher-condition teacher_reference", script)
+        self.assertIn("--teacher-condition teacher_skeleton", script)
+        self.assertIn("--skip-rollout-entropy", script)
+        self.assertIn("student_teacher_category_kl_summary.json", script)
+
 
 if __name__ == "__main__":
     unittest.main()

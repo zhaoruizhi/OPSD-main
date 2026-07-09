@@ -11,43 +11,137 @@ import json
 import math
 import random
 import re
+import string
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
 
-STYLE_MARKERS = {
-    "wait",
-    "think",
-    "thinking",
-    "actually",
+TOKEN_CATEGORY_NAMES = ("style", "math", "other")
+
+STYLE_TOKEN_WORDS = {
     "maybe",
+    "perhaps",
+    "probably",
+    "possibly",
+    "let",
+    "okay",
+    "ok",
+    "alright",
     "hmm",
-    "oops",
+    "wait",
+    "because",
+    "since",
+    "so",
+    "thus",
+    "hence",
+    "therefore",
+    "but",
+    "however",
+    "although",
+    "though",
+    "yet",
+    "or",
+    "alternatively",
     "instead",
-    "reconsider",
-    "restart",
+    "otherwise",
+    "actually",
+    "really",
+    "just",
+    "simply",
+    "basically",
+    "very",
+    "quite",
+    "pretty",
+    "rather",
+    "fairly",
+    "now",
+    "then",
+    "next",
+    "first",
+    "second",
+    "finally",
+    "try",
+    "see",
+    "check",
+    "note",
+    "recall",
+    "think",
+    "idea",
+    "strategy",
+    "approach",
+    "method",
+    "way",
+    "would",
+    "could",
+    "should",
+    "might",
+    "can",
+    "huge",
+    "large",
+    "big",
+    "small",
+    "tiny",
+    "interesting",
+    "tricky",
+    "complex",
+    "simple",
 }
 
-MATH_MARKERS = {
-    "\\frac",
-    "\\sqrt",
-    "\\boxed",
-    "\\cdot",
-    "\\times",
-    "\\leq",
-    "\\geq",
-    "\\sum",
-    "\\int",
-    "=",
-    "+",
-    "-",
-    "*",
-    "/",
-    "^",
-    "<",
-    ">",
+MATH_TOKEN_WORDS = {
+    "exponential",
+    "exponent",
+    "power",
+    "powers",
+    "base",
+    "logarithm",
+    "logarithms",
+    "log",
+    "ln",
+    "in",
+    "compare",
+    "comparing",
+    "comparison",
+    "less",
+    "equal",
+    "larger",
+    "smaller",
+    "greater",
+    "factor",
+    "factors",
+    "prime",
+    "divisible",
+    "equation",
+    "expression",
+    "formula",
+    "inequality",
+    "rational",
+    "irrational",
+    "real",
+    "integer",
+    "coefficient",
+    "variable",
+    "constant",
+    "sum",
+    "product",
+    "difference",
+    "quotient",
+    "fraction",
+    "denominator",
+    "numerator",
+    "root",
+    "square",
+    "cube",
+    "nth",
+    "maximum",
+    "minimum",
+    "optimize",
+    "bound",
 }
+
+STYLE_MARKERS = STYLE_TOKEN_WORDS
+MATH_MARKERS = MATH_TOKEN_WORDS
+TOKEN_WORD_STRIP_CHARS = string.punctuation
 
 RESTART_PATTERNS = [
     r"\blet'?s start over\b",
@@ -670,17 +764,49 @@ def ngram_overlap_rate(candidate: str | None, reference: str | None, n: int = 4)
     return overlap / max(1, sum(cand_ngrams.values()))
 
 
+def normalized_token_word(token_text: str) -> str:
+    lowered = str(token_text or "").strip().lower()
+    lowered = lowered.lstrip("Ġ▁")
+    return lowered.strip(TOKEN_WORD_STRIP_CHARS)
+
+
 def is_style_token(token_text: str) -> bool:
-    lowered = token_text.strip().lower()
+    lowered = normalized_token_word(token_text)
     if not lowered:
         return False
-    return lowered in STYLE_MARKERS or any(marker in lowered for marker in ("start over", "from scratch"))
+    return lowered in STYLE_MARKERS
 
 
 def is_math_token(token_text: str) -> bool:
-    if any(char.isdigit() for char in token_text):
-        return True
-    return any(marker in token_text for marker in MATH_MARKERS)
+    normalized = normalized_token_word(token_text)
+    return normalized in MATH_MARKERS
+
+
+def token_category(token_text: str) -> str:
+    if is_style_token(token_text):
+        return "style"
+    if is_math_token(token_text):
+        return "math"
+    return "other"
+
+
+def summarize_token_category_values(token_texts: list[str], values: list[float]) -> dict[str, dict[str, float | int]]:
+    if len(token_texts) != len(values):
+        raise ValueError("token_texts and values must have the same length")
+
+    totals: dict[str, dict[str, float | int]] = {
+        category: {"num_tokens": 0, "sum_kl": 0.0, "mean_kl": 0.0}
+        for category in TOKEN_CATEGORY_NAMES
+    }
+    for token_text, value in zip(token_texts, values):
+        row = totals[token_category(token_text)]
+        row["num_tokens"] = int(row["num_tokens"]) + 1
+        row["sum_kl"] = float(row["sum_kl"]) + float(value)
+
+    for row in totals.values():
+        count = int(row["num_tokens"])
+        row["mean_kl"] = float(row["sum_kl"]) / count if count else 0.0
+    return totals
 
 
 def _looks_like_new_solution(continuation: str | None) -> bool:
@@ -837,23 +963,32 @@ def summarize_logit_records(records: Iterable[dict[str, Any]]) -> dict[str, Any]
         elif record.get("contrast") is not None:
             contrast_records[str(record.get("contrast", "unknown"))].append(record)
 
+    contrast_summary: dict[str, dict[str, Any]] = {}
+    for contrast, items in sorted(contrast_records.items()):
+        category_summary = aggregate_token_category_kl(items)
+        contrast_summary[contrast] = {
+            "num_cases": len(items),
+            "mean_kl": _mean(item.get("mean_kl") for item in items),
+            "mean_top1_agreement": _mean(item.get("top1_agreement") for item in items),
+            "mean_topk_jaccard": _mean(item.get("topk_jaccard") for item in items),
+            "mean_delta_logp_target": _mean(item.get("mean_delta_logp_target") for item in items),
+            "mean_style_kl_share": _mean(item.get("style_kl_share") for item in items),
+            "mean_math_kl_share": _mean(item.get("math_kl_share") for item in items),
+            "mean_first_window_kl_share": _mean(item.get("first_window_kl_share") for item in items),
+            "mean_teacher_entropy": _mean(item.get("mean_teacher_entropy") for item in items),
+            "mean_student_entropy": _mean(item.get("mean_student_entropy") for item in items),
+            "mean_delta_entropy": _mean(item.get("mean_delta_entropy") for item in items),
+            "token_category_kl": category_summary,
+            "mean_style_kl": category_summary["style"]["mean_kl"],
+            "mean_math_kl": category_summary["math"]["mean_kl"],
+            "mean_other_kl": category_summary["other"]["mean_kl"],
+            "style_token_count": category_summary["style"]["num_tokens"],
+            "math_token_count": category_summary["math"]["num_tokens"],
+            "other_token_count": category_summary["other"]["num_tokens"],
+        }
+
     return {
-        "contrasts": {
-            contrast: {
-                "num_cases": len(items),
-                "mean_kl": _mean(item.get("mean_kl") for item in items),
-                "mean_top1_agreement": _mean(item.get("top1_agreement") for item in items),
-                "mean_topk_jaccard": _mean(item.get("topk_jaccard") for item in items),
-                "mean_delta_logp_target": _mean(item.get("mean_delta_logp_target") for item in items),
-                "mean_style_kl_share": _mean(item.get("style_kl_share") for item in items),
-                "mean_math_kl_share": _mean(item.get("math_kl_share") for item in items),
-                "mean_first_window_kl_share": _mean(item.get("first_window_kl_share") for item in items),
-                "mean_teacher_entropy": _mean(item.get("mean_teacher_entropy") for item in items),
-                "mean_student_entropy": _mean(item.get("mean_student_entropy") for item in items),
-                "mean_delta_entropy": _mean(item.get("mean_delta_entropy") for item in items),
-            }
-            for contrast, items in sorted(contrast_records.items())
-        },
+        "contrasts": contrast_summary,
         "rollout_entropy": {
             condition: {
                 "num_cases": len(items),
@@ -867,3 +1002,35 @@ def summarize_logit_records(records: Iterable[dict[str, Any]]) -> dict[str, Any]
 def _mean(values: Iterable[Any]) -> float:
     numeric = [float(value) for value in values if isinstance(value, (int, float))]
     return sum(numeric) / len(numeric) if numeric else 0.0
+
+
+def aggregate_token_category_kl(records: Iterable[dict[str, Any]]) -> dict[str, dict[str, float | int]]:
+    totals: dict[str, dict[str, float | int]] = {
+        category: {"num_tokens": 0, "sum_kl": 0.0, "mean_kl": 0.0}
+        for category in TOKEN_CATEGORY_NAMES
+    }
+    for record in records:
+        category_summary = record.get("token_category_kl")
+        if not isinstance(category_summary, dict):
+            continue
+        for category in TOKEN_CATEGORY_NAMES:
+            row = category_summary.get(category)
+            if not isinstance(row, dict):
+                continue
+            try:
+                count = int(row.get("num_tokens", 0))
+            except (TypeError, ValueError):
+                count = 0
+            if isinstance(row.get("sum_kl"), (int, float)):
+                sum_kl = float(row["sum_kl"])
+            elif isinstance(row.get("mean_kl"), (int, float)):
+                sum_kl = float(row["mean_kl"]) * count
+            else:
+                sum_kl = 0.0
+            totals[category]["num_tokens"] = int(totals[category]["num_tokens"]) + count
+            totals[category]["sum_kl"] = float(totals[category]["sum_kl"]) + sum_kl
+
+    for row in totals.values():
+        count = int(row["num_tokens"])
+        row["mean_kl"] = float(row["sum_kl"]) / count if count else 0.0
+    return totals

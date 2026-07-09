@@ -13,6 +13,8 @@ from eval.quick_opsd_common import (
     extract_boxed_answer,
     normalize_semantic_skeleton,
     ngram_overlap_rate,
+    summarize_token_category_values,
+    token_category,
     read_skeleton_file,
     shard_items,
     split_prefix_by_token_ratio,
@@ -157,6 +159,31 @@ class QuickOpsdCommonTests(unittest.TestCase):
         self.assertTrue(detect_restart("Let's start over and solve from scratch."))
         self.assertFalse(detect_restart("Thus the next value is 4."))
         self.assertGreater(ngram_overlap_rate("a b c d x", "a b c d y", n=4), 0.0)
+
+    def test_token_category_uses_style_math_and_other_lists(self):
+        self.assertEqual(token_category(" wait"), "style")
+        self.assertEqual(token_category("Therefore,"), "style")
+        self.assertEqual(token_category(" fraction"), "math")
+        self.assertEqual(token_category("variable"), "math")
+        self.assertEqual(token_category("in"), "math")
+        self.assertEqual(token_category("x^2"), "other")
+        self.assertEqual(token_category("2"), "other")
+        self.assertEqual(token_category("="), "other")
+        self.assertEqual(token_category(r"\frac"), "other")
+        self.assertEqual(token_category(" elephant"), "other")
+
+    def test_summarize_token_category_values_uses_token_weighted_means(self):
+        summary = summarize_token_category_values(
+            [" wait", " fraction", "variable", "x^2", "plain"],
+            [0.8, 0.2, 0.4, 0.5, 0.1],
+        )
+
+        self.assertEqual(summary["style"]["num_tokens"], 1)
+        self.assertAlmostEqual(summary["style"]["mean_kl"], 0.8)
+        self.assertEqual(summary["math"]["num_tokens"], 2)
+        self.assertAlmostEqual(summary["math"]["mean_kl"], 0.3)
+        self.assertEqual(summary["other"]["num_tokens"], 2)
+        self.assertAlmostEqual(summary["other"]["mean_kl"], 0.3)
 
     def test_continuation_metrics_marks_correctness_and_copy_rate(self):
         metrics = continuation_metrics(

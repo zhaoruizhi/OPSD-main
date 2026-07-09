@@ -57,9 +57,9 @@ class RolloutConditionSpec:
     prompt_kind: str
 
 
-def build_rollout_condition_specs() -> list[RolloutConditionSpec]:
+def build_rollout_condition_specs(student_enable_thinking: bool = False) -> list[RolloutConditionSpec]:
     return [
-        RolloutConditionSpec("student", enable_thinking=False, prompt_kind="student"),
+        RolloutConditionSpec("student", enable_thinking=bool(student_enable_thinking), prompt_kind="student"),
         RolloutConditionSpec("teacher_base", enable_thinking=True, prompt_kind="base"),
         RolloutConditionSpec("teacher_reference", enable_thinking=True, prompt_kind="reference"),
         RolloutConditionSpec("teacher_skeleton", enable_thinking=True, prompt_kind="skeleton"),
@@ -80,9 +80,41 @@ def _encode_prompt_token_ids(tokenizer: Any, prompt_text: str) -> list[int]:
     return _int_token_ids(encoded.get("input_ids"))
 
 
+def lora_adapter_exists(path: str | Path | None) -> bool:
+    if not path:
+        return False
+    checkpoint_path = Path(path)
+    return (checkpoint_path / "adapter_model.safetensors").exists() or (
+        checkpoint_path / "adapter_model.bin"
+    ).exists()
+
+
+def build_vllm_lora_request(checkpoint_dir: str | None) -> Any:
+    if not checkpoint_dir:
+        return None
+    if not lora_adapter_exists(checkpoint_dir):
+        raise ValueError(
+            f"--checkpoint-dir does not contain adapter_model.safetensors or adapter_model.bin: {checkpoint_dir}"
+        )
+    from vllm.lora.request import LoRARequest
+
+    return LoRARequest("checkpoint_lora", 1, checkpoint_dir)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run OPSD quick standalone rollouts on OpenThoughts data.")
     parser.add_argument("--model", type=str, default="/data0/shared/Qwen3-1.7B")
+    parser.add_argument(
+        "--base-model",
+        dest="base_model",
+        type=str,
+        help="Base model path. Alias for --model when generating with a LoRA checkpoint.",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        help="Optional PEFT/LoRA checkpoint directory to load on top of --base-model/--model.",
+    )
     parser.add_argument("--dataset", type=str, default="siyanzhao/Openthoughts_math_30k_opsd")
     parser.add_argument("--split", type=str, default="train")
     parser.add_argument("--sample-size", type=int, default=256)
@@ -99,6 +131,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--max-model-len", type=int, default=20000)
+    parser.add_argument(
+        "--student-enable-thinking",
+        action="store_true",
+        help="Use thinking chat template for the student condition.",
+    )
     parser.add_argument("--output-file", type=str, required=False)
     parser.add_argument("--summary-file", type=str, required=True)
     parser.add_argument(
@@ -109,7 +146,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--summarize-only", action="store_true")
     parser.add_argument("--input-file", type=str, help="JSONL file to summarize when --summarize-only is set.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.base_model:
+        args.model = args.base_model
+    else:
+        args.base_model = args.model
+    return args
 
 
 def main() -> None:
@@ -144,16 +186,27 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
     selected_examples = [(idx, all_rows[idx]) for idx in shard_indices]
     skeletons = read_skeleton_file(args.skeleton_file) if args.skeleton_file else {}
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-    llm = LLM(
-        model=args.model,
-        trust_remote_code=True,
-        tensor_parallel_size=args.tensor_parallel_size,
-        gpu_memory_utilization=args.gpu_memory_utilization,
-        max_model_len=args.max_model_len,
-        distributed_executor_backend="mp",
-        enforce_eager=True,
-    )
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
+    lora_request = build_vllm_lora_request(args.checkpoint_dir)
+    llm_config: dict[str, Any] = {
+        "model": args.base_model,
+        "trust_remote_code": True,
+        "tensor_parallel_size": args.tensor_parallel_size,
+        "gpu_memory_utilization": args.gpu_memory_utilization,
+        "max_model_len": args.max_model_len,
+        "distributed_executor_backend": "mp",
+        "enforce_eager": True,
+    }
+    if lora_request is not None:
+        llm_config.update(
+            {
+                "enable_lora": True,
+                "max_lora_rank": 64,
+                "max_loras": 1,
+                "max_cpu_loras": 1,
+            }
+        )
+    llm = LLM(**llm_config)
     sampling_params = SamplingParams(
         n=args.val_n,
         temperature=args.temperature,
@@ -161,11 +214,12 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
         top_k=args.top_k,
         max_tokens=args.max_new_tokens,
     )
-    requested = set(args.condition or [spec.name for spec in build_rollout_condition_specs()])
+    condition_specs = build_rollout_condition_specs(student_enable_thinking=args.student_enable_thinking)
+    requested = set(args.condition or [spec.name for spec in condition_specs])
     if "teacher_skeleton" in requested and not skeletons:
         raise ValueError("--skeleton-file is required when running teacher_skeleton")
     output_records: list[dict[str, Any]] = []
-    for spec in build_rollout_condition_specs():
+    for spec in condition_specs:
         if spec.name not in requested:
             continue
 
@@ -197,7 +251,10 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
                 }
             )
 
-        outputs = llm.generate(prompts, sampling_params, use_tqdm=True)
+        if lora_request is not None:
+            outputs = llm.generate(prompts, sampling_params, lora_request=lora_request, use_tqdm=True)
+        else:
+            outputs = llm.generate(prompts, sampling_params, use_tqdm=True)
         for meta, output in zip(metadata, outputs):
             prompt_token_ids = _int_token_ids(getattr(output, "prompt_token_ids", None))
             if not prompt_token_ids:
