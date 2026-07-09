@@ -5,13 +5,13 @@
 这个实验用于在 10 个 problem 上测：
 
 - target trajectory：`student` 自己生成的 completion tokens。
-- baseline distribution：student prompt，即只看 problem 的 `P_student`。
+- baseline distribution：student prompt 作为条件上下文，即只看 problem 的 `P_student`。
 - teacher distributions：
   - `teacher_reference`：看 problem、final answer、完整 reference solution。
   - `teacher_skeleton`：看 problem、final answer、semantic skeleton JSON。
 - 指标：沿 student 轨迹逐 token 计算 `KL(P_teacher || P_student)`，再按 target token 文本分成 `style`、`math`、`other` 三类，输出每类平均 KL。
 
-注意这里的 teacher 沿 OPSD 口径指“同一套模型权重在 privileged teacher prompt 下的分布”。如果 checkpoint 是 LoRA，脚本会用 `--base-model` 加载 base Qwen3，再用 `--checkpoint-dir` 加载 adapter。
+这里不是计算 prompt token 的 KL。prompt 只决定条件上下文；真正被打分的 target tokens 是 student rollout 的 completion tokens。teacher 沿 OPSD 口径指“同一套模型权重在 privileged teacher prompt 下的分布”。如果 checkpoint 是 LoRA，脚本会用 `--base-model` 加载 base Qwen3，再用 `--checkpoint-dir` 加载 adapter。
 
 ## 代码改动
 
@@ -72,6 +72,9 @@ Style/Math 词表来自截图。分类时会对 decoded token 做：
 - `mean_style_kl`
 - `mean_math_kl`
 - `mean_other_kl`
+- `mean_style_kl_share`
+- `mean_math_kl_share`
+- `mean_other_kl_share`
 - `style_token_count`
 - `math_token_count`
 - `other_token_count`
@@ -213,6 +216,9 @@ $OUT/student_teacher_category_kl_summary.json
       "mean_style_kl": 0.0,
       "mean_math_kl": 0.0,
       "mean_other_kl": 0.0,
+      "mean_style_kl_share": 0.0,
+      "mean_math_kl_share": 0.0,
+      "mean_other_kl_share": 0.0,
       "token_category_kl": {
         "style": {"num_tokens": 0, "sum_kl": 0.0, "mean_kl": 0.0},
         "math": {"num_tokens": 0, "sum_kl": 0.0, "mean_kl": 0.0},
@@ -223,7 +229,10 @@ $OUT/student_teacher_category_kl_summary.json
       "num_cases": 10,
       "mean_style_kl": 0.0,
       "mean_math_kl": 0.0,
-      "mean_other_kl": 0.0
+      "mean_other_kl": 0.0,
+      "mean_style_kl_share": 0.0,
+      "mean_math_kl_share": 0.0,
+      "mean_other_kl_share": 0.0
     }
   }
 }
@@ -234,6 +243,8 @@ $OUT/student_teacher_category_kl_summary.json
 - Style: `mean_style_kl`
 - Math: `mean_math_kl`
 - Other: `mean_other_kl`
+
+如果要看 KL mass 占比，取 `mean_style_kl_share`、`mean_math_kl_share`、`mean_other_kl_share`。
 
 ## 注意事项
 

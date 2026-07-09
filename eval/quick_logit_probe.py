@@ -395,9 +395,14 @@ def context_prompt_ids_for_condition(
     student_enable_thinking: bool = False,
 ) -> tuple[list[int], str]:
     context_records = case.get("context_records")
-    record = context_records.get(condition, case) if isinstance(context_records, dict) else case
+    has_matching_context_record = isinstance(context_records, dict) and condition in context_records
+    record = context_records[condition] if has_matching_context_record else case
     prompt_ids = _coerce_token_ids(record.get("prompt_token_ids"))
-    if prompt_ids:
+    record_condition = str(record.get("condition") or "")
+    prompt_ids_match_condition = record_condition == condition or (
+        not record_condition and (has_matching_context_record or not isinstance(context_records, dict))
+    )
+    if prompt_ids and prompt_ids_match_condition:
         return prompt_ids, PROMPT_TOKEN_SOURCE_TOKEN_IDS
 
     prompt_text = rollout_context_prompt(
@@ -910,6 +915,10 @@ def compare_contexts(
     token_texts = [tokenizer.decode([token_id], skip_special_tokens=False) for token_id in target_ids]
     style_mask = [is_style_token(text) for text in token_texts]
     math_mask = [is_math_token(text) for text in token_texts]
+    other_mask = [
+        not style_keep and not math_keep
+        for style_keep, math_keep in zip(style_mask, math_mask)
+    ]
     token_category_kl = summarize_token_category_values(token_texts, kl_values)
     total_kl = float(sum(kl_values))
     first_window = min(first_window_tokens, len(target_ids))
@@ -946,6 +955,7 @@ def compare_contexts(
         "mean_delta_entropy": sum(delta_entropy_values) / len(delta_entropy_values) if delta_entropy_values else 0.0,
         "style_kl_share": _masked_share(kl_values, style_mask, total_kl),
         "math_kl_share": _masked_share(kl_values, math_mask, total_kl),
+        "other_kl_share": _masked_share(kl_values, other_mask, total_kl),
         "token_category_kl": token_category_kl,
         "first_window_kl_share": (
             sum(kl_values[:first_window]) / total_kl if total_kl > 0 and first_window else 0.0

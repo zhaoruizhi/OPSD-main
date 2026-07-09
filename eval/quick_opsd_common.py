@@ -974,6 +974,7 @@ def summarize_logit_records(records: Iterable[dict[str, Any]]) -> dict[str, Any]
             "mean_delta_logp_target": _mean(item.get("mean_delta_logp_target") for item in items),
             "mean_style_kl_share": _mean(item.get("style_kl_share") for item in items),
             "mean_math_kl_share": _mean(item.get("math_kl_share") for item in items),
+            "mean_other_kl_share": _mean(item.get("other_kl_share") for item in items),
             "mean_first_window_kl_share": _mean(item.get("first_window_kl_share") for item in items),
             "mean_teacher_entropy": _mean(item.get("mean_teacher_entropy") for item in items),
             "mean_student_entropy": _mean(item.get("mean_student_entropy") for item in items),

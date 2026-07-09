@@ -342,6 +342,42 @@ class QuickLogitProbeTests(unittest.TestCase):
         self.assertEqual(prompt_ids, [1])
         self.assertEqual(source, "reconstructed_prompt_text")
 
+    def test_missing_teacher_context_does_not_reuse_student_prompt_ids(self):
+        class FakeTokenizer:
+            def __call__(self, text, add_special_tokens=False):
+                if "Reference Solution Begin" not in text:
+                    raise AssertionError("teacher_reference prompt should be reconstructed")
+                return {"input_ids": [99, 100]}
+
+            def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True, enable_thinking=False):
+                return f"thinking={enable_thinking}:{messages[0]['content']}"
+
+        prompt_ids, source = context_prompt_ids_for_condition(
+            tokenizer=FakeTokenizer(),
+            case={
+                "problem_id": 1,
+                "problem": "2+2?",
+                "solution": "2+2=4",
+                "ground_truth": "4",
+                "condition": "student",
+                "enable_thinking": False,
+                "prompt_token_ids": [7, 8, 9],
+                "context_records": {
+                    "student": {
+                        "condition": "student",
+                        "problem": "2+2?",
+                        "enable_thinking": False,
+                        "prompt_token_ids": [7, 8, 9],
+                    }
+                },
+            },
+            condition="teacher_reference",
+            skeletons={},
+        )
+
+        self.assertEqual(prompt_ids, [99, 100])
+        self.assertEqual(source, "reconstructed_prompt_text")
+
     def test_compare_contexts_uses_hf_logprob_rows(self):
         class FakeTokenizer:
             def decode(self, token_ids, skip_special_tokens=False):
@@ -449,6 +485,7 @@ class QuickLogitProbeTests(unittest.TestCase):
                     "mean_delta_logp_target": 0.4,
                     "style_kl_share": 0.5,
                     "math_kl_share": 0.6,
+                    "other_kl_share": 0.1,
                     "first_window_kl_share": 0.7,
                     "mean_teacher_entropy": 1.0,
                     "mean_student_entropy": 2.0,
@@ -468,6 +505,7 @@ class QuickLogitProbeTests(unittest.TestCase):
                     "mean_delta_logp_target": 0.6,
                     "style_kl_share": 0.7,
                     "math_kl_share": 0.8,
+                    "other_kl_share": 0.3,
                     "first_window_kl_share": 0.9,
                     "mean_teacher_entropy": 3.0,
                     "mean_student_entropy": 4.0,
@@ -489,6 +527,7 @@ class QuickLogitProbeTests(unittest.TestCase):
         self.assertEqual(contrast["mean_teacher_entropy"], 2.0)
         self.assertEqual(contrast["mean_student_entropy"], 3.0)
         self.assertEqual(contrast["mean_delta_entropy"], -1.0)
+        self.assertAlmostEqual(contrast["mean_other_kl_share"], 0.2)
         self.assertAlmostEqual(contrast["token_category_kl"]["style"]["mean_kl"], 0.4)
         self.assertEqual(contrast["token_category_kl"]["style"]["num_tokens"], 3)
         self.assertAlmostEqual(contrast["token_category_kl"]["math"]["mean_kl"], 0.225)
