@@ -68,15 +68,23 @@ Problem: {problem}
 Final answer: {ground_truth}
 
 Here is a reference solution to this problem:
+
 === Reference Solution Begin ===
 {
-  "checks": [...],
+  "check": [...],
   "critical_intermediates": [...],
   "key_objects": [...],
   "subgoals": [...],
   "theorem_tags": [...]
 }
 === Reference Solution End ===
+
+Interpret the fields as follows:
+- "key_objects" records potentially important mathematical objects and constraints.
+- "subgoals" records possible mathematical objectives.
+- "critical_intermediates" records potentially useful mathematical checkpoints. They are not mandatory generated sentences and do not imply that the reference path is the only valid path.
+- "theorem_tags" records optional and non-exclusive methods. Do not force a listed theorem when another valid approach is more natural.
+- "check" records validity conditions or possible failure modes. Apply a check only when it is relevant to the reasoning being used.
 
 After reading the reference solution above, ...
 Please reason step by step, and put your final answer within \boxed{}.

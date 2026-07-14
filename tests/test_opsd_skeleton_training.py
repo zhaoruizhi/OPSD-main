@@ -155,6 +155,7 @@ class OpsdSkeletonTrainingTests(unittest.TestCase):
         self.assertIn("Full reference solution.", teacher_content)
         self.assertIn("=== Reference Solution Begin ===", teacher_content)
         self.assertNotIn("Final answer:", teacher_content)
+        self.assertNotIn("Interpret the fields as follows:", teacher_content)
 
     def test_collator_skeleton_mode_uses_skeleton_without_full_reference_or_answer_in_block(self):
         from data_collator import SelfDistillationDataCollator
@@ -191,10 +192,27 @@ class OpsdSkeletonTrainingTests(unittest.TestCase):
         self.assertIn("Final answer: 4", teacher_content)
         self.assertEqual(teacher_content.count("Final answer: 4"), 1)
         self.assertLess(teacher_content.index("Final answer: 4"), teacher_content.index("Reference Solution Begin"))
+        self.assertIn(
+            "Here is a reference solution to this problem:\n\n=== Reference Solution Begin ===",
+            teacher_content,
+        )
         self.assertIn('"subgoals"', skeleton_block)
+        self.assertIn('"check"', skeleton_block)
+        self.assertNotIn('"checks"', skeleton_block)
         self.assertIn("evaluate the sum", skeleton_block)
         self.assertNotIn("final_answer", skeleton_block)
         self.assertNotIn("Full reference solution must not appear.", teacher_content)
+
+        field_guidance = (
+            'Interpret the fields as follows:\n'
+            '- "key_objects" records potentially important mathematical objects and constraints.\n'
+            '- "subgoals" records possible mathematical objectives.\n'
+            '- "critical_intermediates" records potentially useful mathematical checkpoints. '
+            'They are not mandatory generated sentences and do not imply that the reference path is the only valid path.\n'
+            '- "theorem_tags" records optional and non-exclusive methods. Do not force a listed theorem when another valid approach is more natural.\n'
+            '- "check" records validity conditions or possible failure modes. Apply a check only when it is relevant to the reasoning being used.'
+        )
+        self.assertIn(f"=== Reference Solution End ===\n\n{field_guidance}\n\nAfter reading", teacher_content)
 
     def test_collator_skeleton_mode_accepts_serialized_skeleton(self):
         from data_collator import SelfDistillationDataCollator

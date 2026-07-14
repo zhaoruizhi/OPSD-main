@@ -46,10 +46,9 @@ scripts/run_semantic_skeleton_ablation.sh
 
 ## Prompt 是怎么使用 skeleton 的
 
-`teacher_reference` 和 `teacher_skeleton` 使用同一个 privileged prompt 模板，只替换 `{solution}`：
+`teacher_reference` 保持原有 privileged prompt 不变，其中 `{solution}` 是完整 reference solution。
 
-- `teacher_reference`: `{solution}` 是完整 reference solution。
-- `teacher_skeleton`: `{solution}` 是去掉 `final_answer` 字段后的 semantic skeleton JSON。
+`teacher_skeleton` 的 `{solution}` 是去掉 `final_answer` 字段后的 semantic skeleton JSON，并在 reference block 后增加各字段的使用说明：
 
 ```text
 Problem: {problem}
@@ -57,11 +56,19 @@ Problem: {problem}
 Final answer: {ground_truth}
 
 Here is a reference solution to this problem:
+
 === Reference Solution Begin ===
 {solution}
 === Reference Solution End ===
 
-After reading the reference solution above, make sure you truly understand the reasoning behind each step - do not copy or paraphrase it. Now, using your own words and independent reasoning, derive the same final answer to the problem above. Think step by step, explore different approaches, and don't be afraid to backtrack or reconsider if something doesn't work out:
+Interpret the fields as follows:
+- "key_objects" records potentially important mathematical objects and constraints.
+- "subgoals" records possible mathematical objectives.
+- "critical_intermediates" records potentially useful mathematical checkpoints. They are not mandatory generated sentences and do not imply that the reference path is the only valid path.
+- "theorem_tags" records optional and non-exclusive methods. Do not force a listed theorem when another valid approach is more natural.
+- "check" records validity conditions or possible failure modes. Apply a check only when it is relevant to the reasoning being used.
+
+After reading the reference solution above, make sure you truly understand the reasoning behind each step — do not copy or paraphrase it. Now, using your own words and independent reasoning, derive the same final answer to the problem above. Think step by step, explore different approaches, and don't be afraid to backtrack or reconsider if something doesn't work out:
 
 Please reason step by step, and put your final answer within \boxed{}.
 ```

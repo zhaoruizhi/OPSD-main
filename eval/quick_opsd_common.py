@@ -19,6 +19,18 @@ from typing import Any, Iterable
 
 TOKEN_CATEGORY_NAMES = ("style", "math", "other")
 
+SEMANTIC_SKELETON_FIELD_GUIDANCE = (
+    'Interpret the fields as follows:\n'
+    '- "key_objects" records potentially important mathematical objects and constraints.\n'
+    '- "subgoals" records possible mathematical objectives.\n'
+    '- "critical_intermediates" records potentially useful mathematical checkpoints. '
+    'They are not mandatory generated sentences and do not imply that the reference path is the only valid path.\n'
+    '- "theorem_tags" records optional and non-exclusive methods. '
+    'Do not force a listed theorem when another valid approach is more natural.\n'
+    '- "check" records validity conditions or possible failure modes. '
+    'Apply a check only when it is relevant to the reasoning being used.'
+)
+
 STYLE_TOKEN_WORDS = {
     "maybe",
     "perhaps",
@@ -339,13 +351,29 @@ def build_semantic_skeleton_user_message(
     skeleton_without_answer = {
         key: value for key, value in normalized_skeleton.items() if key != "final_answer"
     }
+    skeleton_without_answer["check"] = skeleton_without_answer.pop("checks")
     skeleton_json = json.dumps(
         skeleton_without_answer,
         ensure_ascii=False,
         indent=2,
         sort_keys=True,
     )
-    return build_reference_user_message(problem, skeleton_json, ground_truth=final_answer)
+    transition_prompt = (
+        "After reading the reference solution above, make sure you truly understand "
+        "the reasoning behind each step — do not copy or paraphrase it. Now, using your "
+        "own words and independent reasoning, derive the same final answer to the problem above. "
+        "Think step by step, explore different approaches, and don't be afraid to backtrack "
+        "or reconsider if something doesn't work out:\n"
+    )
+    return (
+        f"Problem: {problem}\n\n"
+        f"{_ground_truth_line(final_answer)}"
+        "Here is a reference solution to this problem:\n\n"
+        f"=== Reference Solution Begin ===\n{skeleton_json}\n=== Reference Solution End ===\n\n"
+        f"{SEMANTIC_SKELETON_FIELD_GUIDANCE}\n\n"
+        f"{transition_prompt}\n"
+        "Please reason step by step, and put your final answer within \\boxed{}."
+    )
 
 
 FIRST_ERROR_DIAGNOSTIC_FIELDS = (

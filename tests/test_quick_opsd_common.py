@@ -71,11 +71,12 @@ class QuickOpsdCommonTests(unittest.TestCase):
         self.assertIn("Reference Solution Begin", oracle)
         self.assertIn("Because 4.", oracle)
         self.assertEqual(oracle, build_opsd_oracle_user_message("2+2?", "Because 4."))
+        self.assertNotIn("Interpret the fields as follows:", oracle)
         self.assertIn("Hidden diagnostic information", intervention)
         self.assertIn(json.dumps("reach 4")[1:-1], intervention)
         self.assertIn("Do not restart", intervention)
 
-    def test_semantic_skeleton_prompt_uses_reference_prompt_shape(self):
+    def test_semantic_skeleton_prompt_explains_fields_before_reasoning_instruction(self):
         prompt = build_semantic_skeleton_user_message(
             "2+2?",
             {
@@ -90,6 +91,10 @@ class QuickOpsdCommonTests(unittest.TestCase):
 
         self.assertIn("Problem: 2+2?", prompt)
         self.assertIn("Here is a reference solution to this problem:", prompt)
+        self.assertIn(
+            "Here is a reference solution to this problem:\n\n=== Reference Solution Begin ===",
+            prompt,
+        )
         self.assertIn("Reference Solution Begin", prompt)
         self.assertIn("Reference Solution End", prompt)
         self.assertIn("Final answer: 4", prompt)
@@ -97,8 +102,24 @@ class QuickOpsdCommonTests(unittest.TestCase):
         self.assertNotIn("Semantic Skeleton Begin", prompt)
         self.assertNotIn("Semantic Skeleton End", prompt)
         self.assertNotIn("semantic skeleton", prompt.lower())
-        self.assertIn('"critical_intermediates"', prompt)
-        self.assertIn('"checks"', prompt)
+        skeleton_block = prompt.split("=== Reference Solution Begin ===\n", 1)[1].split(
+            "\n=== Reference Solution End ===", 1
+        )[0]
+        self.assertIn('"critical_intermediates"', skeleton_block)
+        self.assertIn('"check"', skeleton_block)
+        self.assertNotIn('"checks"', skeleton_block)
+
+        field_guidance = (
+            'Interpret the fields as follows:\n'
+            '- "key_objects" records potentially important mathematical objects and constraints.\n'
+            '- "subgoals" records possible mathematical objectives.\n'
+            '- "critical_intermediates" records potentially useful mathematical checkpoints. '
+            'They are not mandatory generated sentences and do not imply that the reference path is the only valid path.\n'
+            '- "theorem_tags" records optional and non-exclusive methods. Do not force a listed theorem when another valid approach is more natural.\n'
+            '- "check" records validity conditions or possible failure modes. Apply a check only when it is relevant to the reasoning being used.'
+        )
+        self.assertIn(f"=== Reference Solution End ===\n\n{field_guidance}\n\nAfter reading", prompt)
+        self.assertIn("reasoning behind each step — do not copy or paraphrase it", prompt)
 
     def test_normalize_semantic_skeleton_accepts_legacy_aliases(self):
         skeleton = normalize_semantic_skeleton(

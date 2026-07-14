@@ -7,6 +7,18 @@ from opsd_skeleton import normalize_semantic_skeleton
 
 TEACHER_CONTEXT_MODES = {"reference", "skeleton"}
 
+SEMANTIC_SKELETON_FIELD_GUIDANCE = (
+    'Interpret the fields as follows:\n'
+    '- "key_objects" records potentially important mathematical objects and constraints.\n'
+    '- "subgoals" records possible mathematical objectives.\n'
+    '- "critical_intermediates" records potentially useful mathematical checkpoints. '
+    'They are not mandatory generated sentences and do not imply that the reference path is the only valid path.\n'
+    '- "theorem_tags" records optional and non-exclusive methods. '
+    'Do not force a listed theorem when another valid approach is more natural.\n'
+    '- "check" records validity conditions or possible failure modes. '
+    'Apply a check only when it is relevant to the reasoning being used.'
+)
+
 
 class SelfDistillationDataCollator:
     """
@@ -245,6 +257,7 @@ class SelfDistillationDataCollator:
         skeleton_without_answer = {
             key: value for key, value in normalized_skeleton.items() if key != "final_answer"
         }
+        skeleton_without_answer["check"] = skeleton_without_answer.pop("checks")
         skeleton_json = json.dumps(
             skeleton_without_answer,
             ensure_ascii=False,
@@ -256,8 +269,9 @@ class SelfDistillationDataCollator:
         return (
             f"Problem: {problem}\n\n"
             f"{ground_truth_line}"
-            f"Here is a reference solution to this problem:\n"
-            f"=== Reference Solution Begin ===\n{skeleton_json}\n=== Reference Solution End ===\n"
+            f"Here is a reference solution to this problem:\n\n"
+            f"=== Reference Solution Begin ===\n{skeleton_json}\n=== Reference Solution End ===\n\n"
+            f"{SEMANTIC_SKELETON_FIELD_GUIDANCE}"
             f"{self.transition_prompt}\n"
             f"Please reason step by step, and put your final answer within \\boxed{{}}."
         )
