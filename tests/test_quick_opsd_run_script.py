@@ -73,6 +73,28 @@ class QuickOpsdRunScriptTests(unittest.TestCase):
         self.assertIn("--skip-rollout-entropy", script)
         self.assertIn("student_teacher_category_kl_summary.json", script)
 
+    def test_teacher_spike_runner_accepts_arbitrary_gpu_ids(self):
+        script = Path("scripts/run_teacher_spike_continuations.sh").read_text(encoding="utf-8")
+
+        self.assertIn('--gpu-ids)', script)
+        self.assertIn('read -r -a GPU_ID_ARRAY <<< "$GPU_IDS"', script)
+        self.assertIn('CUDA_VISIBLE_DEVICES="$gpu"', script)
+        self.assertIn('--max-new-tokens "$MAX_NEW_TOKENS"', script)
+        self.assertIn('--shard-id "$shard_id"', script)
+        self.assertIn('--num-shards "$NUM_SHARDS"', script)
+        self.assertIn('--sort-key rank', script)
+        self.assertIn('student_teacher_category_kl_remerged.jsonl', script)
+        self.assertIn('teacher_spike_continuations.html', script)
+
+    def test_category_kl_runner_integrates_teacher_spike_phase(self):
+        script = Path("scripts/run_student_teacher_category_kl.sh").read_text(encoding="utf-8")
+
+        self.assertIn("run_teacher_spike_continuations.sh", script)
+        self.assertIn("--teacher-continuation-top-n", script)
+        self.assertIn("--teacher-continuation-max-new-tokens", script)
+        self.assertIn("--skip-teacher-continuations", script)
+        self.assertIn("quick_jsonl_merge.py", script)
+
 
 if __name__ == "__main__":
     unittest.main()
