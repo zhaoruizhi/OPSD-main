@@ -94,6 +94,7 @@ class QuickOpsdRunScriptTests(unittest.TestCase):
         self.assertIn("--teacher-continuation-max-new-tokens", script)
         self.assertIn("--skip-teacher-continuations", script)
         self.assertIn("quick_jsonl_merge.py", script)
+        self.assertIn('--kl-file "$OUT/student_teacher_category_kl.jsonl"', script)
 
 
 if __name__ == "__main__":

@@ -472,7 +472,7 @@ def render_html_report(records: list[dict[str, Any]]) -> str:
             f"""
             <section class="card">
               <h2>Rank {int(record.get('rank', 0))} · problem {_escaped_pre(record.get('problem_id'))}
-                · position {int(record.get('position', 0))}</h2>
+                · sample {int(record.get('sample_index', 0))} · position {int(record.get('position', 0))}</h2>
               <div class="metrics">max KL {float(record.get('max_kl', 0.0)):.6f} ·
                 reference KL {float(record.get('reference_kl', 0.0)):.6f} ·
                 skeleton KL {float(record.get('skeleton_kl', 0.0)):.6f}</div>
@@ -508,6 +508,8 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     sorted_records = sorted(records, key=lambda row: int(row.get("rank", 0)))
     return {
         "num_records": len(sorted_records),
+        "num_successful_records": len(sorted_records),
+        "num_failed_records": 0,
         "ranks": [int(row.get("rank", 0)) for row in sorted_records],
         "generation_config": sorted_records[0].get("generation_config") if sorted_records else {},
         "conditions": list(TEACHER_CONDITIONS),

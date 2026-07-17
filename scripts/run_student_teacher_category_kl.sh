@@ -283,6 +283,7 @@ if [[ "$SKIP_TEACHER_CONTINUATIONS" -eq 0 ]]; then
   bash scripts/run_teacher_spike_continuations.sh \
     "${MODEL_ARGS[@]}" \
     --out "$OUT" \
+    --kl-file "$OUT/student_teacher_category_kl.jsonl" \
     --gpu-ids "$GPU_IDS" \
     --top-n "$TEACHER_CONTINUATION_TOP_N" \
     --max-new-tokens "$TEACHER_CONTINUATION_MAX_NEW_TOKENS" \

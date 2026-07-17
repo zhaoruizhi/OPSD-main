@@ -195,6 +195,18 @@ class TeacherSpikeReportTests(unittest.TestCase):
         self.assertIn("&lt;student&gt;", html)
         self.assertIn("&lt;reference&gt;", html)
         self.assertNotIn("<student>", html)
+        self.assertIn("sample 0", html)
+
+    def test_summary_reports_success_and_failure_counts(self):
+        from eval.quick_teacher_spike_continuation import summarize_records
+
+        summary = summarize_records(
+            [{"rank": 1, "generation_config": {"max_new_tokens": 20}}]
+        )
+
+        self.assertEqual(summary["num_records"], 1)
+        self.assertEqual(summary["num_successful_records"], 1)
+        self.assertEqual(summary["num_failed_records"], 0)
 
     def test_cli_defaults_to_global_top_ten_and_twenty_tokens(self):
         from eval.quick_teacher_spike_continuation import parse_args
