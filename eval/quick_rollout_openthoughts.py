@@ -66,6 +66,25 @@ def build_rollout_condition_specs(student_enable_thinking: bool = False) -> list
     ]
 
 
+def max_new_tokens_for_condition(
+    condition_name: str,
+    *,
+    max_new_tokens: int,
+    student_max_new_tokens: int | None = None,
+    teacher_max_new_tokens: int | None = None,
+) -> int:
+    if condition_name == "student":
+        value = student_max_new_tokens
+    elif condition_name in {"teacher_base", "teacher_reference", "teacher_skeleton"}:
+        value = teacher_max_new_tokens
+    else:
+        raise ValueError(f"Unknown rollout condition: {condition_name}")
+    resolved = max_new_tokens if value is None else value
+    if resolved <= 0:
+        raise ValueError("Rollout max new tokens must be a positive integer")
+    return resolved
+
+
 def _int_token_ids(value: Any) -> list[int]:
     if value is None:
         return []
@@ -125,6 +144,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--val-n", type=int, default=4)
     parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument(
+        "--student-max-new-tokens",
+        type=int,
+        help="Optional student-only generation limit; overrides --max-new-tokens.",
+    )
+    parser.add_argument(
+        "--teacher-max-new-tokens",
+        type=int,
+        help="Optional teacher-only generation limit; overrides --max-new-tokens.",
+    )
     parser.add_argument("--temperature", type=float, default=1.1)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=20)
@@ -207,13 +236,6 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
             }
         )
     llm = LLM(**llm_config)
-    sampling_params = SamplingParams(
-        n=args.val_n,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        top_k=args.top_k,
-        max_tokens=args.max_new_tokens,
-    )
     condition_specs = build_rollout_condition_specs(student_enable_thinking=args.student_enable_thinking)
     requested = set(args.condition or [spec.name for spec in condition_specs])
     if "teacher_skeleton" in requested and not skeletons:
@@ -222,6 +244,19 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
     for spec in condition_specs:
         if spec.name not in requested:
             continue
+
+        sampling_params = SamplingParams(
+            n=args.val_n,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            max_tokens=max_new_tokens_for_condition(
+                spec.name,
+                max_new_tokens=args.max_new_tokens,
+                student_max_new_tokens=args.student_max_new_tokens,
+                teacher_max_new_tokens=args.teacher_max_new_tokens,
+            ),
+        )
 
         prompts: list[str] = []
         metadata: list[dict[str, Any]] = []
