@@ -425,8 +425,8 @@ pre{{white-space:pre-wrap;overflow-wrap:anywhere}}select{{max-width:100%;padding
 <script>
 const data=JSON.parse(document.getElementById('kl-data').textContent), cases=data.cases, spikes=data.spikes;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
-const visible=s=>String(s??'').replace(/\n/g,'⏎').replace(/\t/g,'⇥').replace(/ /g,'·');
-const topText=rows=>(rows||[]).slice(0,8).map(r=>`${{visible(r.token)}}: ${{Number(r.prob||0).toPrecision(3)}}`).join('\n');
+const visible=s=>String(s??'').replace(/\\n/g,'⏎').replace(/\\t/g,'⇥').replace(/ /g,'·');
+const topText=rows=>(rows||[]).slice(0,8).map(r=>`${{visible(r.token)}}: ${{Number(r.prob||0).toPrecision(3)}}`).join('\\n');
 const select=document.getElementById('caseSelect');
 cases.forEach((c,i)=>{{const o=document.createElement('option');o.value=i;o.textContent=`${{c.case_id}} · tokens=${{c.num_tokens}}`;select.appendChild(o)}});
 function draw(c){{

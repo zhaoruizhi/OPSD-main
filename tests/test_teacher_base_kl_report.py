@@ -170,6 +170,12 @@ class TeacherBaseKlOutputTests(TeacherBaseKlCaseTests):
             html_text = html_path.read_text(encoding="utf-8")
             self.assertIn("Teacher Base KL Contrast Visualization", html_text)
             self.assertIn("avg_completion_tokens", html_text)
+            self.assertIn(r".replace(/\n/g,'⏎')", html_text)
+            self.assertIn(r".replace(/\t/g,'⇥')", html_text)
+            self.assertIn(r".join('\n')", html_text)
+            self.assertNotIn(".replace(/\n/g", html_text)
+            self.assertNotIn(".replace(/\t/g", html_text)
+            self.assertNotIn(".join('\n')", html_text)
             for condition in (
                 "student",
                 "teacher_base",
