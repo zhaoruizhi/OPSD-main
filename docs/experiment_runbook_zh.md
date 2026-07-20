@@ -3,8 +3,8 @@
 本文档给出当前 `main` 上三类实验的完整终端步骤：
 
 1. reference / semantic-skeleton OPSD 训练；
-2. student rollout 上的 reference/skeleton teacher KL 对比；
-3. 在全局 Top-KL 位置分别让 reference teacher 和 skeleton teacher 续写。
+2. 四路 rollout 的 performance / token length 与两套 KL 对比；
+3. 在 student 轨迹的全局 Top-KL 位置分别让 reference teacher 和 skeleton teacher 续写。
 
 所有命令都从仓库根目录执行：
 
@@ -104,24 +104,29 @@ qwen31b_gen1024_skeleton_fixteacher_temp11_forwardbeta0_clip005
 
 reference 和 skeleton 公平对比时使用相同 GPU 数量、训练超参和 checkpoint 步数，但用不同的 `MAIN_PROCESS_PORT` 并分别启动。
 
-## 3. 一次跑完 rollout、KL 对比和 teacher 续写
+## 3. 一次跑完四路 rollout、两套 KL 和 teacher 续写
 
-这个入口默认依次运行：
+`scripts/run_student_teacher_category_kl.sh` 现在依次运行：
 
-1. 生成 student rollout；
-2. 沿 student completion tokens 计算 `teacher_reference_vs_student` 和 `teacher_skeleton_vs_student` KL；
-3. 选择全局 Top-KL token 位置，让两种 teacher 分别 greedy 续写；
-4. 生成 student/reference/skeleton 三列 HTML 报告。
+1. 在同一批题上生成 `student`、`teacher_base`、`teacher_reference`、`teacher_skeleton` 四路 rollout；
+2. 汇总四路 performance 和 `avg_completion_tokens`；
+3. 在固定 `teacher_base` rollout 上计算 `teacher_reference_vs_teacher_base`、`teacher_skeleton_vs_teacher_base` KL，并计算四路 rollout entropy；
+4. 生成旧实验同名的 teacher-base KL CSV、JSONL、HTML；
+5. 在固定 student rollout 上计算 `teacher_reference_vs_student`、`teacher_skeleton_vs_student` 分类 KL；
+6. 从 student 轨迹 KL 中选择全局 Top-KL token，让两种 teacher 分别 greedy 续写并生成三列 HTML。
 
-### LoRA/PEFT checkpoint，两张 GPU 4、5
+两套 KL 使用相同模型权重，但 target trajectory 和 baseline 不同，结果文件不会相互覆盖。teacher prompt 始终来自当前代码：reference teacher 使用当前 reference prompt，skeleton teacher 使用当前 style-neutral semantic skeleton prompt。
+
+### 服务器示例：Qwen3-1.7B、GPU 4 和 5
 
 ```bash
-KL_OUT=/path/to/outputs/student_teacher_kl_$(date +%Y%m%d_%H%M%S)
+cd /home/ruizzhao/OPSD-main
+
+KL_OUT=/home/ruizzhao/OPSD-main/outputs/opsd_quick/student_teacher_dual_kl_$(date +%Y%m%d_%H%M%S)
 
 bash scripts/run_student_teacher_category_kl.sh \
-  --base-model /path/to/Qwen3-1.7B \
-  --checkpoint-dir /path/to/checkpoint-100 \
-  --skeleton-file /path/to/full-train-skeletons.jsonl \
+  --base-model /home/ruizzhao/OPSD-main/models/Qwen3-1.7B \
+  --skeleton-file /home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl \
   --out "$KL_OUT" \
   --student-tm off \
   --sample-size 10 \
@@ -129,21 +134,21 @@ bash scripts/run_student_teacher_category_kl.sh \
   --max-model-len 20000 \
   --hf-device-map cuda \
   --teacher-continuation-top-n 10 \
-  --teacher-continuation-max-new-tokens 20 \
+  --teacher-continuation-max-new-tokens 200 \
   --seed 0
 ```
 
-如果 checkpoint 是已经合并 adapter 的完整模型，删除 `--checkpoint-dir`，并把该模型目录直接传给 `--base-model`。
+如果测试 LoRA/PEFT checkpoint，在命令中增加：
+
+```bash
+--checkpoint-dir /path/to/checkpoint-100
+```
+
+如果 checkpoint 已经合并成完整模型，不传 `--checkpoint-dir`，把合并后的模型目录直接传给 `--base-model`。
 
 ### TM-on student
 
-将上面的：
-
-```bash
---student-tm off
-```
-
-改成：
+teacher 三路保持当前 thinking 设置；只把 student 改为 TM-on：
 
 ```bash
 --student-tm on \
@@ -151,17 +156,18 @@ bash scripts/run_student_teacher_category_kl.sh \
 --max-model-len 32768
 ```
 
-## 4. 只跑 rollout + KL 对比，不做续写
+## 4. 只跑四路 rollout + 两套 KL，不做续写
 
-使用 `--skip-teacher-continuations`。建议保留 `$KL_OUT`，之后可以从该目录单独恢复续写阶段。
+在上一节命令末尾增加 `--skip-teacher-continuations`：
 
 ```bash
-KL_OUT=/path/to/outputs/student_teacher_kl_only_$(date +%Y%m%d_%H%M%S)
+cd /home/ruizzhao/OPSD-main
+
+KL_OUT=/home/ruizzhao/OPSD-main/outputs/opsd_quick/student_teacher_dual_kl_only_$(date +%Y%m%d_%H%M%S)
 
 bash scripts/run_student_teacher_category_kl.sh \
-  --base-model /path/to/Qwen3-1.7B \
-  --checkpoint-dir /path/to/checkpoint-100 \
-  --skeleton-file /path/to/full-train-skeletons.jsonl \
+  --base-model /home/ruizzhao/OPSD-main/models/Qwen3-1.7B \
+  --skeleton-file /home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl \
   --out "$KL_OUT" \
   --student-tm off \
   --sample-size 10 \
@@ -172,75 +178,93 @@ bash scripts/run_student_teacher_category_kl.sh \
   --skip-teacher-continuations
 ```
 
-KL 对比完成后重点查看：
+### Performance 和 token length
+
+查看：
 
 ```text
-$KL_OUT/student_rollouts.jsonl
+$KL_OUT/rollout_summary.json
+```
+
+`conditions` 下有四组：
+
+- `student`
+- `teacher_base`
+- `teacher_reference`
+- `teacher_skeleton`
+
+每组的 performance 字段包括 `avg_at_n`、`pass_at_n`、`majority_vote`、`format_rate`；token length 字段是 `avg_completion_tokens`。如果主要比较 student/reference/skeleton 三路，直接从这三组读取即可；teacher_base 作为旧 KL 基准一并保留。
+
+### Teacher-base 轨迹 KL（旧实验口径）
+
+```text
+$KL_OUT/logit_probe.jsonl
+$KL_OUT/logit_summary.json
+$KL_OUT/visualizations/teacher_base_kl_reference_vs_skeleton_report.html
+$KL_OUT/visualizations/teacher_base_kl_reference_vs_skeleton_top_spikes.csv
+$KL_OUT/visualizations/teacher_base_top_distribution_spikes.jsonl
+```
+
+`logit_summary.json` 中比较：
+
+- `teacher_reference_vs_teacher_base`
+- `teacher_skeleton_vs_teacher_base`
+
+同时包含 `student`、`teacher_base`、`teacher_reference`、`teacher_skeleton` 四路 `rollout_entropy`。
+
+### Student 轨迹 KL（分类与续写口径）
+
+```text
 $KL_OUT/student_teacher_category_kl.jsonl
 $KL_OUT/student_teacher_category_kl_summary.json
 ```
 
-summary 中主要比较：
+其中比较：
 
-- `teacher_reference_vs_student`；
-- `teacher_skeleton_vs_student`；
-- 两个 contrast 下的 `mean_style_kl`、`mean_math_kl`、`mean_other_kl`；
-- `mean_style_kl_share`、`mean_math_kl_share`、`mean_other_kl_share`。
+- `teacher_reference_vs_student`
+- `teacher_skeleton_vs_student`
 
-## 5. 从已有 KL 结果单独运行或恢复 teacher 续写
+这套记录保留 completion token IDs，并用于后续 Top-KL teacher 续写。分类字段包括 `mean_style_kl`、`mean_math_kl`、`mean_other_kl` 及对应 KL share。
 
-### 前置文件
+## 5. 从已有双 KL 结果单独运行或恢复 teacher 续写
 
-`--out` 指向的 KL 结果目录至少需要：
+`$KL_OUT` 至少需要：
 
 ```text
-student_rollouts.jsonl
+rollouts.jsonl
 skeletons.jsonl
 student_teacher_category_kl_shard*.jsonl
 ```
 
-续写必须使用计算 KL 时相同的 base model 和 checkpoint。
-
-### 两张 GPU 4、5
+续写必须使用计算 KL 时相同的 base model 和 checkpoint。完整服务器命令：
 
 ```bash
-KL_OUT=/path/to/completed-kl-output
+cd /home/ruizzhao/OPSD-main
+
+KL_OUT=/home/ruizzhao/OPSD-main/outputs/opsd_quick/student_teacher_dual_kl_YYYYMMDD_HHMMSS
 
 bash scripts/run_teacher_spike_continuations.sh \
-  --base-model /path/to/Qwen3-1.7B \
-  --checkpoint-dir /path/to/checkpoint-100 \
+  --base-model /home/ruizzhao/OPSD-main/models/Qwen3-1.7B \
   --out "$KL_OUT" \
+  --student-rollout-file "$KL_OUT/rollouts.jsonl" \
+  --skeleton-file "$KL_OUT/skeletons.jsonl" \
   --gpu-ids "4 5" \
   --top-n 10 \
-  --max-new-tokens 20 \
+  --max-new-tokens 200 \
   --max-model-len 20000 \
   --hf-device-map cuda
 ```
 
-续写阶段可以使用与 KL 阶段不同的 GPU 数量或编号；全局 Top-N 在分片前确定，因此改变 worker 数量不会改变入选位置。例如四张 GPU：
+如果使用 adapter，增加同一个 `--checkpoint-dir /path/to/checkpoint-100`。续写阶段可以更换 GPU 数量或编号；全局 Top-N 在分片前确定，因此 worker 数量不会改变入选位置。
 
-```bash
-bash scripts/run_teacher_spike_continuations.sh \
-  --base-model /path/to/Qwen3-1.7B \
-  --checkpoint-dir /path/to/checkpoint-100 \
-  --out /path/to/completed-kl-output \
-  --gpu-ids "0 1 2 3" \
-  --top-n 10 \
-  --max-new-tokens 20
-```
+如果一体化脚本在 continuation 阶段中断，不需要重跑 rollout 或两套 KL。上面的命令会：
 
-### 中断后重跑
-
-如果一体化脚本已经完成 rollout 和 KL、但在 teacher continuation 阶段中断，不需要重跑 rollout/KL。直接重新执行本节的 `run_teacher_spike_continuations.sh` 命令即可。脚本会：
-
-1. 从完整 KL shards 重新校验并原子生成 `student_teacher_category_kl_remerged.jsonl`；
+1. 从 student-trajectory KL shards 校验并原子生成 `student_teacher_category_kl_remerged.jsonl`；
 2. 重新生成 continuation shards；
 3. 原子合并并按全局 `rank` 排序；
 4. 重建 summary 和 HTML 报告。
 
 ## 6. Teacher 续写输出
-
-续写完成后查看：
 
 ```text
 $KL_OUT/student_teacher_category_kl_remerged.jsonl
@@ -249,11 +273,7 @@ $KL_OUT/teacher_spike_continuation_summary.json
 $KL_OUT/visualizations/teacher_spike_continuations.html
 ```
 
-HTML 报告按高 KL 位置展示三列：
-
-1. student 原始后续；
-2. reference teacher 续写；
-3. semantic-skeleton teacher 续写。
+HTML 按高 KL 位置展示 student 原始后续、reference teacher 续写、semantic-skeleton teacher 续写三列。
 
 ## 7. 常见启动问题
 
