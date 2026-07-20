@@ -117,6 +117,18 @@ reference 和 skeleton 公平对比时使用相同 GPU 数量、训练超参和 
 
 两套 KL 使用相同模型权重，但 target trajectory 和 baseline 不同，结果文件不会相互覆盖。teacher prompt 始终来自当前代码：reference teacher 使用当前 reference prompt，skeleton teacher 使用当前 style-neutral semantic skeleton prompt。
 
+### Rollout 长度参数（重要）
+
+`--max-model-len` 不是生成长度。它是模型可使用的总上下文上限，即 prompt tokens 与 completion tokens 的总和。四路 rollout 的生成长度由下面两个参数分别控制：
+
+| 参数 | 控制范围 | 当前默认值 |
+| --- | --- | --- |
+| `--student-max-new-tokens` | 只控制 `student` | TM-off 为 `1024`；TM-on 为 `16384` |
+| `--teacher-max-new-tokens` | 控制 `teacher_base`、`teacher_reference`、`teacher_skeleton` | `16384` |
+| `--max-model-len` | prompt + completion 的总上下文 | `20000` |
+
+兼容旧命令的 `--max-new-tokens N` 仍然保留，它会同时设置 student 和三路 teacher；如果同时传入分组参数，则 `--student-max-new-tokens` 或 `--teacher-max-new-tokens` 优先。正式对比建议显式写出两个分组参数，避免把 context length 误当成 completion length。
+
 ### 服务器示例：Qwen3-1.7B、GPU 4 和 5
 
 ```bash
@@ -129,6 +141,8 @@ bash scripts/run_student_teacher_category_kl.sh \
   --skeleton-file /home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl \
   --out "$KL_OUT" \
   --student-tm off \
+  --student-max-new-tokens 1024 \
+  --teacher-max-new-tokens 16384 \
   --sample-size 10 \
   --gpu-ids "4 5" \
   --max-model-len 20000 \
@@ -152,7 +166,8 @@ teacher 三路保持当前 thinking 设置；只把 student 改为 TM-on：
 
 ```bash
 --student-tm on \
---max-new-tokens 16384 \
+--student-max-new-tokens 16384 \
+--teacher-max-new-tokens 16384 \
 --max-model-len 32768
 ```
 
@@ -170,6 +185,8 @@ bash scripts/run_student_teacher_category_kl.sh \
   --skeleton-file /home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl \
   --out "$KL_OUT" \
   --student-tm off \
+  --student-max-new-tokens 1024 \
+  --teacher-max-new-tokens 16384 \
   --sample-size 10 \
   --gpu-ids "4 5" \
   --max-model-len 20000 \
@@ -211,6 +228,27 @@ $KL_OUT/visualizations/teacher_base_top_distribution_spikes.jsonl
 - `teacher_skeleton_vs_teacher_base`
 
 同时包含 `student`、`teacher_base`、`teacher_reference`、`teacher_skeleton` 四路 `rollout_entropy`。
+
+### 只修复已有结果的 KL 可视化（不使用 GPU）
+
+如果 rollout 和 KL 已经完成，但 HTML 中曲线、热力图或 spike 表为空，可以直接根据现有 JSONL 重建三个可视化文件：
+
+```bash
+cd /home/ruizzhao/OPSD-main
+
+KL_OUT=/home/ruizzhao/OPSD-main/outputs/opsd_quick/student_teacher_dual_kl_YYYYMMDD_HHMMSS
+
+python3 eval/quick_teacher_base_kl_report.py \
+  --logit-file "$KL_OUT/logit_probe.jsonl" \
+  --rollout-file "$KL_OUT/rollouts.jsonl" \
+  --rollout-summary-file "$KL_OUT/rollout_summary.json" \
+  --skeleton-file "$KL_OUT/skeletons.jsonl" \
+  --csv-file "$KL_OUT/visualizations/teacher_base_kl_reference_vs_skeleton_top_spikes.csv" \
+  --spikes-jsonl-file "$KL_OUT/visualizations/teacher_base_top_distribution_spikes.jsonl" \
+  --report-file "$KL_OUT/visualizations/teacher_base_kl_reference_vs_skeleton_report.html"
+```
+
+这条命令只修复可视化。已经在 1024 tokens 处被截断的 teacher rollout 无法从现有文件补回，因此 performance 和 token length 必须使用修复后的 runner 重新跑。
 
 ### Student 轨迹 KL（分类与续写口径）
 
@@ -302,3 +340,15 @@ KL 参数必须整体加引号并以空格分隔：
 ```bash
 --kl-file /path/to/student_teacher_category_kl.jsonl
 ```
+
+### 传了 `--max-model-len 20000`，结果仍显示 1024 tokens
+
+`20000` 是 prompt + completion 的总上下文上限，不是要求模型生成 20000 tokens。检查启动日志中的三行：
+
+```text
+Student TM: off | Student max new tokens: 1024
+Teacher max new tokens: 16384
+Model context length: 20000
+```
+
+如果 teacher rollout 的 `finish_reason` 大量为 `length` 且 token 数等于 16384，说明 teacher 触及的是生成上限；此时再结合显存和 prompt 长度决定是否提高 `--teacher-max-new-tokens` 与 `--max-model-len`。
