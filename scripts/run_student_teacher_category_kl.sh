@@ -12,6 +12,8 @@ SAMPLE_SIZE=10
 VAL_N=1
 STUDENT_TM="${STUDENT_TM:-off}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-}"
+STUDENT_MAX_NEW_TOKENS="${STUDENT_MAX_NEW_TOKENS:-}"
+TEACHER_MAX_NEW_TOKENS="${TEACHER_MAX_NEW_TOKENS:-}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-20000}"
 TEMPERATURE="${TEMPERATURE:-1.1}"
 TOP_P="${TOP_P:-0.95}"
@@ -66,6 +68,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --max-new-tokens)
       MAX_NEW_TOKENS="$2"
+      shift 2
+      ;;
+    --student-max-new-tokens)
+      STUDENT_MAX_NEW_TOKENS="$2"
+      shift 2
+      ;;
+    --teacher-max-new-tokens)
+      TEACHER_MAX_NEW_TOKENS="$2"
       shift 2
       ;;
     --max-model-len)
@@ -129,15 +139,11 @@ done
 
 case "$STUDENT_TM" in
   off)
-    if [[ -z "$MAX_NEW_TOKENS" ]]; then
-      MAX_NEW_TOKENS="1024"
-    fi
+    DEFAULT_STUDENT_MAX_NEW_TOKENS="1024"
     STUDENT_THINKING_ARGS=()
     ;;
   on)
-    if [[ -z "$MAX_NEW_TOKENS" ]]; then
-      MAX_NEW_TOKENS="16384"
-    fi
+    DEFAULT_STUDENT_MAX_NEW_TOKENS="16384"
     STUDENT_THINKING_ARGS=(--student-enable-thinking)
     ;;
   *)
@@ -145,6 +151,26 @@ case "$STUDENT_TM" in
     exit 2
     ;;
 esac
+
+if [[ -z "$STUDENT_MAX_NEW_TOKENS" ]]; then
+  STUDENT_MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-$DEFAULT_STUDENT_MAX_NEW_TOKENS}"
+fi
+if [[ -z "$TEACHER_MAX_NEW_TOKENS" ]]; then
+  TEACHER_MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-16384}"
+fi
+
+validate_positive_integer() {
+  local label="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "$label must be a positive integer, got: $value" >&2
+    exit 2
+  fi
+}
+
+validate_positive_integer "student max new tokens" "$STUDENT_MAX_NEW_TOKENS"
+validate_positive_integer "teacher max new tokens" "$TEACHER_MAX_NEW_TOKENS"
+validate_positive_integer "max model length" "$MAX_MODEL_LEN"
 
 if [[ -z "$SKELETON_FILE" ]]; then
   echo "--skeleton-file is required so teacher_skeleton prompts can be reconstructed." >&2
@@ -168,7 +194,9 @@ echo "Output directory: $OUT"
 echo "Base model: $BASE_MODEL"
 echo "Checkpoint: ${CHECKPOINT_DIR:-none}"
 echo "Dataset: $DATASET:$SPLIT"
-echo "Student TM: $STUDENT_TM | Max new tokens: $MAX_NEW_TOKENS"
+echo "Student TM: $STUDENT_TM | Student max new tokens: $STUDENT_MAX_NEW_TOKENS"
+echo "Teacher max new tokens: $TEACHER_MAX_NEW_TOKENS"
+echo "Model context length: $MAX_MODEL_LEN"
 echo "Sample size: $SAMPLE_SIZE | Val-N: $VAL_N"
 echo "GPU ids: ${GPU_ID_ARRAY[*]} | Num shards: $NUM_SHARDS"
 
@@ -204,7 +232,8 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --shard-id "$shard_id" \
     --num-shards "$NUM_SHARDS" \
     --val-n "$VAL_N" \
-    --max-new-tokens "$MAX_NEW_TOKENS" \
+    --student-max-new-tokens "$STUDENT_MAX_NEW_TOKENS" \
+    --teacher-max-new-tokens "$TEACHER_MAX_NEW_TOKENS" \
     --temperature "$TEMPERATURE" \
     --top-p "$TOP_P" \
     --top-k "$TOP_K" \

@@ -61,8 +61,37 @@ class QuickOpsdRunScriptTests(unittest.TestCase):
         self.assertIn("SAMPLE_SIZE=10", script)
         self.assertIn("VAL_N=1", script)
         self.assertIn("STUDENT_TM=", script)
-        self.assertIn('MAX_NEW_TOKENS="1024"', script)
-        self.assertIn('MAX_NEW_TOKENS="16384"', script)
+        self.assertIn('STUDENT_MAX_NEW_TOKENS="1024"', script)
+        self.assertIn('STUDENT_MAX_NEW_TOKENS="16384"', script)
+        self.assertIn(
+            'TEACHER_MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-16384}"', script
+        )
+        self.assertIn("--student-max-new-tokens)", script)
+        self.assertIn("--teacher-max-new-tokens)", script)
+        self.assertIn(
+            '--student-max-new-tokens "$STUDENT_MAX_NEW_TOKENS"', script
+        )
+        self.assertIn(
+            '--teacher-max-new-tokens "$TEACHER_MAX_NEW_TOKENS"', script
+        )
+        self.assertIn(
+            'validate_positive_integer "student max new tokens" "$STUDENT_MAX_NEW_TOKENS"',
+            script,
+        )
+        self.assertIn(
+            'validate_positive_integer "teacher max new tokens" "$TEACHER_MAX_NEW_TOKENS"',
+            script,
+        )
+        self.assertIn(
+            'validate_positive_integer "max model length" "$MAX_MODEL_LEN"', script
+        )
+        self.assertIn(
+            'Student max new tokens: $STUDENT_MAX_NEW_TOKENS', script
+        )
+        self.assertIn(
+            'Teacher max new tokens: $TEACHER_MAX_NEW_TOKENS', script
+        )
+        self.assertIn('Model context length: $MAX_MODEL_LEN', script)
         self.assertIn("--gpu-ids)", script)
         self.assertNotIn("--condition student", script)
         self.assertIn('--skeleton-file "$OUT/skeletons.jsonl"', script)
