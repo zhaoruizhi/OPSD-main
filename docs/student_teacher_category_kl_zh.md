@@ -253,3 +253,28 @@ $OUT/student_teacher_category_kl_summary.json
 - `--probe-tokens 0` 表示 KL 覆盖完整 student response；如果只想快速 smoke test，可以设成 `128`。
 - `--gpu-ids "4 5"` 会把 10 题按 shard 分到两张卡，输出 shard JSONL 后自动合并；旧参数名 `--gpus "4 5"` 仍兼容。
 - `--hf-device-map cuda` 下，每个 KL 子进程只看到 `CUDA_VISIBLE_DEVICES=$gpu`，因此代码里的 `cuda:0` 对应分配到的物理 GPU。
+
+## Phase 3：在全局 Top-KL 位置续写 teacher
+
+完整脚本现在默认在 KL 计算完成后继续运行 `scripts/run_teacher_spike_continuations.sh`：
+
+- 从所有 KL shards 原子重建并校验 aggregate；
+- 选择全局 Top 10 唯一 token 位置；
+- 在 student token 之前分叉；
+- reference teacher 和 skeleton teacher 各 greedy 续写 20 tokens；
+- 生成 student/reference/skeleton 三列 HTML 报告。
+
+完整流程可增加：
+
+```bash
+--teacher-continuation-top-n 10 \
+--teacher-continuation-max-new-tokens 20
+```
+
+如果暂时只需要旧的 student + KL 输出：
+
+```bash
+--skip-teacher-continuations
+```
+
+如果 KL 已经计算完成，可以只跑新增阶段，并用 `--gpu-ids "0 1"`、`--gpu-ids "7 8"` 或四张卡并行。完整命令、输出说明和故障排查见 [Teacher Top-KL 续写实验](teacher_kl_spike_continuations_zh.md)。

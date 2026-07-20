@@ -22,6 +22,9 @@ PROBE_TOKENS="${PROBE_TOKENS:-0}"
 TRAJECTORY_SAMPLE_INDEX="${TRAJECTORY_SAMPLE_INDEX:-0}"
 HF_DEVICE_MAP="${HF_DEVICE_MAP:-cuda}"
 GPU_IDS="${GPU_IDS:-4}"
+TEACHER_CONTINUATION_TOP_N="${TEACHER_CONTINUATION_TOP_N:-10}"
+TEACHER_CONTINUATION_MAX_NEW_TOKENS="${TEACHER_CONTINUATION_MAX_NEW_TOKENS:-20}"
+SKIP_TEACHER_CONTINUATIONS="${SKIP_TEACHER_CONTINUATIONS:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -101,6 +104,18 @@ while [[ $# -gt 0 ]]; do
       HF_DEVICE_MAP="$2"
       shift 2
       ;;
+    --teacher-continuation-top-n)
+      TEACHER_CONTINUATION_TOP_N="$2"
+      shift 2
+      ;;
+    --teacher-continuation-max-new-tokens)
+      TEACHER_CONTINUATION_MAX_NEW_TOKENS="$2"
+      shift 2
+      ;;
+    --skip-teacher-continuations)
+      SKIP_TEACHER_CONTINUATIONS=1
+      shift
+      ;;
     --gpus|--gpu-ids)
       GPU_IDS="$2"
       shift 2
@@ -174,6 +189,7 @@ cp "$SKELETON_FILE" "$OUT/skeletons.jsonl"
 echo
 echo "== Phase 1: student-only rollout =="
 pids=()
+ROLLOUT_SHARD_FILES=()
 for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
   gpu="${GPU_ID_ARRAY[$gpu_index]}"
   shard_id="$gpu_index"
@@ -198,11 +214,18 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --output-file "$OUT/student_rollout_shard${gpu}.jsonl" \
     --summary-file "$OUT/student_rollout_summary_shard${gpu}.json" &
   pids+=("$!")
+  ROLLOUT_SHARD_FILES+=("$OUT/student_rollout_shard${gpu}.jsonl")
 done
 for pid in "${pids[@]}"; do
   wait "$pid"
 done
-cat "$OUT"/student_rollout_shard*.jsonl > "$OUT/student_rollouts.jsonl"
+ROLLOUT_MERGE_ARGS=()
+for input_file in "${ROLLOUT_SHARD_FILES[@]}"; do
+  ROLLOUT_MERGE_ARGS+=(--input-file "$input_file")
+done
+python eval/quick_jsonl_merge.py \
+  "${ROLLOUT_MERGE_ARGS[@]}" \
+  --output-file "$OUT/student_rollouts.jsonl"
 python eval/quick_rollout_openthoughts.py \
   --summarize-only \
   --input-file "$OUT/student_rollouts.jsonl" \
@@ -211,6 +234,7 @@ python eval/quick_rollout_openthoughts.py \
 echo
 echo "== Phase 2: reference/skeleton teacher vs student category KL =="
 pids=()
+KL_SHARD_FILES=()
 for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
   gpu="${GPU_ID_ARRAY[$gpu_index]}"
   shard_id="$gpu_index"
@@ -236,15 +260,36 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --output-file "$OUT/student_teacher_category_kl_shard${gpu}.jsonl" \
     --summary-file "$OUT/student_teacher_category_kl_summary_shard${gpu}.json" &
   pids+=("$!")
+  KL_SHARD_FILES+=("$OUT/student_teacher_category_kl_shard${gpu}.jsonl")
 done
 for pid in "${pids[@]}"; do
   wait "$pid"
 done
-cat "$OUT"/student_teacher_category_kl_shard*.jsonl > "$OUT/student_teacher_category_kl.jsonl"
+KL_MERGE_ARGS=()
+for input_file in "${KL_SHARD_FILES[@]}"; do
+  KL_MERGE_ARGS+=(--input-file "$input_file")
+done
+python eval/quick_jsonl_merge.py \
+  "${KL_MERGE_ARGS[@]}" \
+  --output-file "$OUT/student_teacher_category_kl.jsonl"
 python eval/quick_logit_probe.py \
   --summarize-only \
   --input-file "$OUT/student_teacher_category_kl.jsonl" \
   --summary-file "$OUT/student_teacher_category_kl_summary.json"
+
+if [[ "$SKIP_TEACHER_CONTINUATIONS" -eq 0 ]]; then
+  echo
+  echo "== Phase 3: global Top-KL teacher continuations =="
+  bash scripts/run_teacher_spike_continuations.sh \
+    "${MODEL_ARGS[@]}" \
+    --out "$OUT" \
+    --kl-file "$OUT/student_teacher_category_kl.jsonl" \
+    --gpu-ids "$GPU_IDS" \
+    --top-n "$TEACHER_CONTINUATION_TOP_N" \
+    --max-new-tokens "$TEACHER_CONTINUATION_MAX_NEW_TOKENS" \
+    --max-model-len "$MAX_MODEL_LEN" \
+    --hf-device-map "$HF_DEVICE_MAP"
+fi
 
 echo
 echo "Student-teacher category KL complete."
@@ -252,3 +297,6 @@ echo "Sample manifest:  $OUT/sample_indices.json"
 echo "Student rollouts: $OUT/student_rollouts.jsonl"
 echo "KL records:       $OUT/student_teacher_category_kl.jsonl"
 echo "KL summary:       $OUT/student_teacher_category_kl_summary.json"
+if [[ "$SKIP_TEACHER_CONTINUATIONS" -eq 0 ]]; then
+  echo "Teacher report:    $OUT/visualizations/teacher_spike_continuations.html"
+fi
