@@ -1,12 +1,12 @@
-# Semantic Skeleton Prompt Implementation Plan
+# Semantic Skeleton Prompt and GPU-Control Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the skeleton-conditioned teacher prompt's reference-solution framing with the approved style-neutral semantic-skeleton prompt in training and quick evaluation.
+**Goal:** Replace the skeleton-conditioned teacher prompt's reference-solution framing, restore selected-GPU training, synchronize the 2026-07-17 KL-spike continuation workflow, and document reproducible commands for every experiment.
 
-**Architecture:** Keep the reference-conditioned prompt untouched. Define skeleton-specific field guidance and transition copy in each existing prompt-building module, then make both skeleton builders serialize the same answer-free normalized JSON inside `Semantic Skeleton` boundaries.
+**Architecture:** Keep the reference-conditioned prompt untouched. Define skeleton-specific prompt copy in both prompt-building modules. Merge the complete four-commit KL continuation dependency chain, restore the skeleton training runner's environment-based GPU controls, and expose training, integrated KL, KL-only, and continuation-only workflows through documented shell commands.
 
-**Tech Stack:** Python 3, `unittest`/pytest, Transformers-compatible prompt builders, Markdown documentation.
+**Tech Stack:** Python 3.10, `unittest`, Transformers-compatible prompt builders, Bash runners, Markdown documentation.
 
 ## Global Constraints
 
@@ -15,7 +15,99 @@
 - Skeleton JSON omits `final_answer` and maps `checks` to `check`.
 - Skeleton prompts do not render a separate `Final answer:` line.
 - Reference prompts remain behaviorally unchanged.
+- Merge commits `1701187`, `48c73b9`, `cdedd22`, and `0781e74` from `codex/teacher-kl-spike-continuations` as one dependency chain.
+- Training GPU IDs are comma-separated in `TRAIN_GPU_IDS`; KL runner GPU IDs are space-separated in `--gpu-ids`.
+- Document reference training, skeleton training, integrated KL plus continuation, KL-only, and continuation-only resume commands.
 - Do not modify the user's unrelated `.DS_Store` change.
+
+---
+
+### Task 0: Synchronize the 2026-07-17 KL continuation workflow
+
+**Files:**
+- Merge: `codex/teacher-kl-spike-continuations`
+- Create: `eval/quick_jsonl_merge.py`
+- Create: `eval/quick_teacher_spike_continuation.py`
+- Create: `scripts/run_teacher_spike_continuations.sh`
+- Modify: `scripts/run_student_teacher_category_kl.sh`
+- Create: `tests/test_quick_jsonl_merge.py`
+- Create: `tests/test_teacher_spike_continuation.py`
+- Modify: `tests/test_quick_opsd_run_script.py`
+- Modify/Create: KL continuation documentation from the branch
+
+**Interfaces:**
+- Consumes: a completed or in-progress student/teacher category-KL output directory and a space-separated `--gpu-ids` value.
+- Produces: ordered JSONL aggregates, teacher continuations at global KL spikes, summaries, and an HTML comparison report.
+
+- [ ] **Step 1: Merge the complete branch**
+
+Run:
+
+```bash
+git merge --no-ff codex/teacher-kl-spike-continuations
+```
+
+Expected: the four commits after common ancestor `84ce1a9` merge without modifying `.DS_Store`.
+
+- [ ] **Step 2: Run the synchronized focused tests**
+
+Run:
+
+```bash
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -p 'test_quick_jsonl_merge.py' -q
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -p 'test_teacher_spike_continuation.py' -q
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -p 'test_quick_opsd_run_script.py' -q
+```
+
+Expected: all synchronized tests pass.
+
+---
+
+### Task 0.5: Restore selected-GPU skeleton training
+
+**Files:**
+- Modify: `scripts/run_opsd_1b_skeleton.sh:1-12`
+- Test: `tests/test_opsd_skeleton_training.py:253-267`
+
+**Interfaces:**
+- Consumes: comma-separated `TRAIN_GPU_IDS`, integer `NUM_PROCESSES`, and integer `MAIN_PROCESS_PORT` environment variables.
+- Produces: an Accelerate launch restricted by `CUDA_VISIBLE_DEVICES` to the selected physical GPUs.
+
+- [ ] **Step 1: Confirm the existing regression test is RED**
+
+Run:
+
+```bash
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -p 'test_opsd_skeleton_training.py' -q
+```
+
+Expected: only `test_skeleton_run_script_uses_skeleton_mode_and_distinct_run_config` fails before the prompt tests are changed.
+
+- [ ] **Step 2: Restore the same launcher controls used by reference training**
+
+Prepend and wire:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SKELETON_FILE="${SKELETON_FILE:-/home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl}"
+TRAIN_GPU_IDS="${TRAIN_GPU_IDS:-0,1,2,3}"
+NUM_PROCESSES="${NUM_PROCESSES:-4}"
+MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-12949}"
+
+CUDA_VISIBLE_DEVICES="$TRAIN_GPU_IDS" accelerate launch \
+    --config_file accelerate.yaml \
+    --num_processes "$NUM_PROCESSES" \
+    --gradient_accumulation_steps 2 \
+    --main_process_port "$MAIN_PROCESS_PORT" \
+```
+
+Leave the remaining skeleton training arguments unchanged.
+
+- [ ] **Step 3: Run the existing runner test and verify GREEN for GPU selection**
+
+Run the test file again. Expected: the runner assertion passes; newly introduced prompt assertions may still fail until Task 3.
 
 ---
 
@@ -66,7 +158,7 @@ self.assertNotIn("reasoning behind each step — do not copy or paraphrase it", 
 Run:
 
 ```bash
-python -m pytest tests/test_opsd_skeleton_training.py -q
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -p 'test_opsd_skeleton_training.py' -q
 ```
 
 Expected: the skeleton-mode test fails because the old implementation still emits `Reference Solution` boundaries and `Final answer: 4`.
@@ -110,7 +202,8 @@ self.assertNotIn("Final answer:", prompt)
 Run:
 
 ```bash
-python -m pytest tests/test_quick_opsd_common.py tests/test_semantic_skeleton_scripts.py -q
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -p 'test_quick_opsd_common.py' -q
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -p 'test_semantic_skeleton_scripts.py' -q
 ```
 
 Expected: skeleton-prompt tests fail on the old heading, boundaries, ground-truth line, and transition; reference-prompt tests remain valid.
@@ -169,7 +262,9 @@ Keep the public `ground_truth` parameter for caller compatibility but do not ren
 Run:
 
 ```bash
-python -m pytest tests/test_opsd_skeleton_training.py tests/test_quick_opsd_common.py tests/test_semantic_skeleton_scripts.py -q
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -p 'test_opsd_skeleton_training.py' -q
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -p 'test_quick_opsd_common.py' -q
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -p 'test_semantic_skeleton_scripts.py' -q
 ```
 
 Expected: all focused tests pass.
@@ -181,6 +276,8 @@ Expected: all focused tests pass.
 **Files:**
 - Modify: `docs/opsd_skeleton_training_zh.md:63-90`
 - Modify: `docs/semantic_skeleton_ablation.md:51-80`
+- Modify: `docs/student_teacher_category_kl_zh.md`
+- Modify: `docs/teacher_kl_spike_continuations_zh.md`
 - Test: repository test suite
 
 **Interfaces:**
@@ -189,7 +286,46 @@ Expected: all focused tests pass.
 
 - [ ] **Step 1: Update both prompt examples and behavior notes**
 
-Replace `Final answer:`, the reference-solution heading/boundaries, bullet-prefixed field guidance, and the old transition with the approved prompt. State that neither the JSON block nor another line exposes `final_answer` in skeleton mode.
+Replace `Final answer:`, the reference-solution heading/boundaries, bullet-prefixed field guidance, and the old transition with the approved prompt. State that neither the JSON block nor another line exposes `final_answer` in skeleton mode. Add complete, copyable command sections for:
+
+```bash
+# Reference OPSD training
+TRAIN_GPU_IDS=4,5 NUM_PROCESSES=2 MAIN_PROCESS_PORT=12949 \
+bash scripts/run_opsd_1b.sh
+
+# Skeleton OPSD training
+SKELETON_FILE=/path/to/skeletons.jsonl \
+TRAIN_GPU_IDS=4,5 NUM_PROCESSES=2 MAIN_PROCESS_PORT=12950 \
+bash scripts/run_opsd_1b_skeleton.sh
+
+# Integrated rollout + KL comparison + teacher continuation
+bash scripts/run_student_teacher_category_kl.sh \
+  --base-model /path/to/base-model \
+  --checkpoint-dir /path/to/checkpoint \
+  --skeleton-file /path/to/skeletons.jsonl \
+  --gpu-ids "4 5" \
+  --out /path/to/output
+
+# KL comparison only
+bash scripts/run_student_teacher_category_kl.sh \
+  --base-model /path/to/base-model \
+  --checkpoint-dir /path/to/checkpoint \
+  --skeleton-file /path/to/skeletons.jsonl \
+  --gpu-ids "4 5" \
+  --out /path/to/output \
+  --skip-teacher-continuations
+
+# Continuation-only resume
+bash scripts/run_teacher_spike_continuations.sh \
+  --base-model /path/to/base-model \
+  --checkpoint-dir /path/to/checkpoint \
+  --out /path/to/completed-kl-output \
+  --gpu-ids "4 5" \
+  --top-n 10 \
+  --max-new-tokens 20
+```
+
+For each command, document prerequisites, GPU ID delimiter, output artifacts, and how integrated versus resumed continuation runs differ.
 
 - [ ] **Step 2: Run formatting and stale-copy checks**
 
@@ -208,7 +344,7 @@ Expected: no whitespace errors; remaining reference-solution matches belong only
 Run:
 
 ```bash
-python -m pytest -q
+/Users/zhaoruizhi/miniconda3/envs/etapp/bin/python -m unittest discover -s tests -q
 ```
 
 Expected: all tests pass with zero failures.
