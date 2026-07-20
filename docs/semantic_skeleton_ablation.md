@@ -7,7 +7,7 @@
 - `student`: non-thinking，prompt 只包含 problem。
 - `teacher_base`: thinking，prompt 只包含 problem。
 - `teacher_reference`: thinking，prompt 包含完整 reference solution 和 final answer。
-- `teacher_skeleton`: thinking，prompt 使用 reference solution 外层格式，内容为 style-neutral semantic skeleton JSON 和 final answer。
+- `teacher_skeleton`: thinking，prompt 使用明确的 style-neutral semantic skeleton 外层格式，不注入完整 reference solution 或 final answer。
 
 主指标：
 
@@ -48,35 +48,28 @@ scripts/run_semantic_skeleton_ablation.sh
 
 `teacher_reference` 保持原有 privileged prompt 不变，其中 `{solution}` 是完整 reference solution。
 
-`teacher_skeleton` 的 `{solution}` 是去掉 `final_answer` 字段后的 semantic skeleton JSON，并在 reference block 后增加各字段的使用说明：
+`teacher_skeleton` 的 `{solution}` 是去掉 `final_answer` 字段后的 semantic skeleton JSON，并在 semantic skeleton block 后增加各字段的使用说明：
 
 ```text
 Problem: {problem}
-
-Final answer: {ground_truth}
-
-Here is a reference solution to this problem:
-
-=== Reference Solution Begin ===
+Below is a style-neutral semantic skeleton extracted from a reference solution.
+=== Semantic Skeleton Begin ===
 {solution}
-=== Reference Solution End ===
-
+=== Semantic Skeleton End ===
 Interpret the fields as follows:
-- "key_objects" records potentially important mathematical objects and constraints.
-- "subgoals" records possible mathematical objectives.
-- "critical_intermediates" records potentially useful mathematical checkpoints. They are not mandatory generated sentences and do not imply that the reference path is the only valid path.
-- "theorem_tags" records optional and non-exclusive methods. Do not force a listed theorem when another valid approach is more natural.
-- "check" records validity conditions or possible failure modes. Apply a check only when it is relevant to the reasoning being used.
-
-After reading the reference solution above, make sure you truly understand the reasoning behind each step — do not copy or paraphrase it. Now, using your own words and independent reasoning, derive the same final answer to the problem above. Think step by step, explore different approaches, and don't be afraid to backtrack or reconsider if something doesn't work out:
-
+"key_objects" records potentially important mathematical objects and constraints.
+"subgoals" records possible mathematical objectives.
+"critical_intermediates" records potentially useful mathematical checkpoints. They are not mandatory generated sentences and do not imply that the reference path is the only valid path.
+"theorem_tags" records optional and non-exclusive methods. Do not force a listed theorem when another valid approach is more natural.
+"check" records validity conditions or possible failure modes. Apply a check only when it is relevant to the reasoning being used.
+After reading the reference solution above, make sure you truly understand the reasoning. Now, using your own words and independent reasoning, derive the same final answer to the problem above. Think step by step, explore different approaches, and don't be afraid to backtrack or reconsider if something doesn't work out:
 Please reason step by step, and put your final answer within \boxed{}.
 ```
 
 注意：
 
-- `teacher_skeleton` prompt 不包含完整 reference solution；`Reference Solution` 块内是 skeleton JSON。
-- skeleton JSON 不包含 `final_answer` 字段；ground truth 单独放在 `Final answer: ...` 行。
+- `teacher_skeleton` prompt 不包含完整 reference solution；`Semantic Skeleton` 块内是 skeleton JSON。
+- skeleton JSON 不包含 `final_answer` 字段，prompt 也不再单独注入 ground truth。
 - `teacher_base` 只包含 problem，不包含 privileged info。
 
 ## Skeleton 生成方式

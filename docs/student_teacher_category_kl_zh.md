@@ -1,5 +1,7 @@
 # Student vs Reference/Skeleton Teacher 分类 KL 说明
 
+从训练到 KL 对比、再到 teacher 续写的完整可复制命令见 [OPSD 实验终端手册](experiment_runbook_zh.md)。
+
 ## 目标
 
 这个实验用于在 10 个 problem 上测：
@@ -8,7 +10,7 @@
 - baseline distribution：student prompt 作为条件上下文，即只看 problem 的 `P_student`。
 - teacher distributions：
   - `teacher_reference`：看 problem、final answer、完整 reference solution。
-  - `teacher_skeleton`：看 problem、final answer、semantic skeleton JSON。
+  - `teacher_skeleton`：看 problem 和 semantic skeleton JSON；不注入完整 reference solution 或 final answer。
 - 指标：沿 student 轨迹逐 token 计算 `KL(P_teacher || P_student)`，再按 target token 文本分成 `style`、`math`、`other` 三类，输出每类平均 KL。
 
 这里不是计算 prompt token 的 KL。prompt 只决定条件上下文；真正被打分的 target tokens 是 student rollout 的 completion tokens。teacher 沿 OPSD 口径指“同一套模型权重在 privileged teacher prompt 下的分布”。如果 checkpoint 是 LoRA，脚本会用 `--base-model` 加载 base Qwen3，再用 `--checkpoint-dir` 加载 adapter。
@@ -103,6 +105,8 @@ Style/Math 词表来自截图。分类时会对 decoded token 做：
 - `VAL_N=1`
 - `--student-tm off` 时 `MAX_NEW_TOKENS=1024`
 - `--student-tm on` 时 `MAX_NEW_TOKENS=16384`
+
+当前脚本默认还会在 KL 完成后运行全局 Top-KL teacher continuation。只需要 rollout + KL 时传 `--skip-teacher-continuations`；已有 KL 结果需要单独或中断后恢复续写时，运行 `scripts/run_teacher_spike_continuations.sh`。
 
 ## 运行命令
 

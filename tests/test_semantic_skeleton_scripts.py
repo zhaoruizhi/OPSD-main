@@ -752,7 +752,7 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
         self.assertLess(prompt.index("Final answer: 4"), prompt.index("Reference Solution Begin"))
         self.assertIn("Please reason step by step, and put your final answer within \\boxed{}.", prompt)
 
-    def test_skeleton_prompt_uses_reference_boundaries_and_exposes_ground_truth_once(self):
+    def test_skeleton_prompt_uses_semantic_boundaries_without_exposing_ground_truth(self):
         from eval.quick_opsd_common import build_semantic_skeleton_user_message
 
         prompt = build_semantic_skeleton_user_message(
@@ -768,18 +768,16 @@ class SemanticSkeletonScriptTests(unittest.TestCase):
             ground_truth="4",
         )
 
-        self.assertIn("Here is a reference solution to this problem:", prompt)
-        self.assertIn("=== Reference Solution Begin ===", prompt)
-        self.assertIn("=== Reference Solution End ===", prompt)
-        self.assertNotIn("Semantic Skeleton Begin", prompt)
-        self.assertNotIn("Semantic Skeleton End", prompt)
-        self.assertNotIn("semantic skeleton", prompt.lower())
-        skeleton_block = prompt.split("=== Reference Solution Begin ===\n", 1)[1].split(
-            "\n=== Reference Solution End ===", 1
+        self.assertIn("Below is a style-neutral semantic skeleton extracted from a reference solution.", prompt)
+        self.assertIn("=== Semantic Skeleton Begin ===", prompt)
+        self.assertIn("=== Semantic Skeleton End ===", prompt)
+        self.assertNotIn("Here is a reference solution to this problem:", prompt)
+        self.assertNotIn("=== Reference Solution Begin ===", prompt)
+        skeleton_block = prompt.split("=== Semantic Skeleton Begin ===\n", 1)[1].split(
+            "\n=== Semantic Skeleton End ===", 1
         )[0]
         self.assertNotIn("final_answer", skeleton_block)
-        self.assertIn("Final answer: 4", prompt)
-        self.assertLess(prompt.index("Final answer: 4"), prompt.index("Reference Solution Begin"))
+        self.assertNotIn("Final answer:", prompt)
         self.assertIn("establish the sum", skeleton_block)
 
 

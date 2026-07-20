@@ -9,14 +9,21 @@ TEACHER_CONTEXT_MODES = {"reference", "skeleton"}
 
 SEMANTIC_SKELETON_FIELD_GUIDANCE = (
     'Interpret the fields as follows:\n'
-    '- "key_objects" records potentially important mathematical objects and constraints.\n'
-    '- "subgoals" records possible mathematical objectives.\n'
-    '- "critical_intermediates" records potentially useful mathematical checkpoints. '
+    '"key_objects" records potentially important mathematical objects and constraints.\n'
+    '"subgoals" records possible mathematical objectives.\n'
+    '"critical_intermediates" records potentially useful mathematical checkpoints. '
     'They are not mandatory generated sentences and do not imply that the reference path is the only valid path.\n'
-    '- "theorem_tags" records optional and non-exclusive methods. '
+    '"theorem_tags" records optional and non-exclusive methods. '
     'Do not force a listed theorem when another valid approach is more natural.\n'
-    '- "check" records validity conditions or possible failure modes. '
+    '"check" records validity conditions or possible failure modes. '
     'Apply a check only when it is relevant to the reasoning being used.'
+)
+
+SEMANTIC_SKELETON_TRANSITION_PROMPT = (
+    "After reading the reference solution above, make sure you truly understand the reasoning. "
+    "Now, using your own words and independent reasoning, derive the same final answer to the problem above. "
+    "Think step by step, explore different approaches, and don't be afraid to backtrack "
+    "or reconsider if something doesn't work out:"
 )
 
 
@@ -250,10 +257,6 @@ class SelfDistillationDataCollator:
             raise ValueError("semantic_skeleton is required when teacher_context_mode='skeleton'")
 
         normalized_skeleton = normalize_semantic_skeleton(skeleton)
-        ground_truth = feature.get("ground_truth")
-        if ground_truth in (None, ""):
-            ground_truth = normalized_skeleton.get("final_answer")
-
         skeleton_without_answer = {
             key: value for key, value in normalized_skeleton.items() if key != "final_answer"
         }
@@ -264,14 +267,12 @@ class SelfDistillationDataCollator:
             indent=2,
             sort_keys=True,
         )
-        ground_truth_line = f"Final answer: {ground_truth}\n\n" if ground_truth not in (None, "") else ""
 
         return (
-            f"Problem: {problem}\n\n"
-            f"{ground_truth_line}"
-            f"Here is a reference solution to this problem:\n\n"
-            f"=== Reference Solution Begin ===\n{skeleton_json}\n=== Reference Solution End ===\n\n"
-            f"{SEMANTIC_SKELETON_FIELD_GUIDANCE}"
-            f"{self.transition_prompt}\n"
-            f"Please reason step by step, and put your final answer within \\boxed{{}}."
+            f"Problem: {problem}\n"
+            "Below is a style-neutral semantic skeleton extracted from a reference solution.\n"
+            f"=== Semantic Skeleton Begin ===\n{skeleton_json}\n=== Semantic Skeleton End ===\n"
+            f"{SEMANTIC_SKELETON_FIELD_GUIDANCE}\n"
+            f"{SEMANTIC_SKELETON_TRANSITION_PROMPT}\n"
+            "Please reason step by step, and put your final answer within \\boxed{}."
         )

@@ -1,10 +1,16 @@
-SKELETON_FILE="${SKELETON_FILE:-/home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl}"
+#!/usr/bin/env bash
+set -euo pipefail
 
-accelerate launch \
+SKELETON_FILE="${SKELETON_FILE:-/home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl}"
+TRAIN_GPU_IDS="${TRAIN_GPU_IDS:-0,1,2,3}"
+NUM_PROCESSES="${NUM_PROCESSES:-4}"
+MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-12949}"
+
+CUDA_VISIBLE_DEVICES="$TRAIN_GPU_IDS" accelerate launch \
     --config_file accelerate.yaml \
-    --num_processes 4 \
+    --num_processes "$NUM_PROCESSES" \
     --gradient_accumulation_steps 2 \
-    --main_process_port 12949 \
+    --main_process_port "$MAIN_PROCESS_PORT" \
     opsd_train.py \
     --model_name_or_path /home/ruizzhao/OPSD-main/models/Qwen3-1.7B \
     --learning_rate 5e-6 \

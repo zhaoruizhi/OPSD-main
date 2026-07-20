@@ -186,17 +186,20 @@ class OpsdSkeletonTrainingTests(unittest.TestCase):
         )
 
         teacher_content = tokenizer.chat_calls[1]["messages"][0]["content"]
-        skeleton_block = teacher_content.split("=== Reference Solution Begin ===\n", 1)[1].split(
-            "\n=== Reference Solution End ===", 1
-        )[0]
-        self.assertIn("Final answer: 4", teacher_content)
-        self.assertEqual(teacher_content.count("Final answer: 4"), 1)
-        self.assertLess(teacher_content.index("Final answer: 4"), teacher_content.index("Reference Solution Begin"))
         self.assertIn(
-            "Here is a reference solution to this problem:\n\n=== Reference Solution Begin ===",
+            "Problem: Compute 2+2.\n"
+            "Below is a style-neutral semantic skeleton extracted from a reference solution.\n"
+            "=== Semantic Skeleton Begin ===",
             teacher_content,
         )
+        skeleton_block = teacher_content.split("=== Semantic Skeleton Begin ===\n", 1)[1].split(
+            "\n=== Semantic Skeleton End ===", 1
+        )[0]
+        self.assertNotIn("Final answer:", teacher_content)
+        self.assertNotIn("Here is a reference solution to this problem:", teacher_content)
+        self.assertNotIn("=== Reference Solution Begin ===", teacher_content)
         self.assertIn('"subgoals"', skeleton_block)
+        self.assertIn('"critical_intermediates"', skeleton_block)
         self.assertIn('"check"', skeleton_block)
         self.assertNotIn('"checks"', skeleton_block)
         self.assertIn("evaluate the sum", skeleton_block)
@@ -205,14 +208,20 @@ class OpsdSkeletonTrainingTests(unittest.TestCase):
 
         field_guidance = (
             'Interpret the fields as follows:\n'
-            '- "key_objects" records potentially important mathematical objects and constraints.\n'
-            '- "subgoals" records possible mathematical objectives.\n'
-            '- "critical_intermediates" records potentially useful mathematical checkpoints. '
+            '"key_objects" records potentially important mathematical objects and constraints.\n'
+            '"subgoals" records possible mathematical objectives.\n'
+            '"critical_intermediates" records potentially useful mathematical checkpoints. '
             'They are not mandatory generated sentences and do not imply that the reference path is the only valid path.\n'
-            '- "theorem_tags" records optional and non-exclusive methods. Do not force a listed theorem when another valid approach is more natural.\n'
-            '- "check" records validity conditions or possible failure modes. Apply a check only when it is relevant to the reasoning being used.'
+            '"theorem_tags" records optional and non-exclusive methods. Do not force a listed theorem when another valid approach is more natural.\n'
+            '"check" records validity conditions or possible failure modes. Apply a check only when it is relevant to the reasoning being used.'
         )
-        self.assertIn(f"=== Reference Solution End ===\n\n{field_guidance}\n\nAfter reading", teacher_content)
+        self.assertIn(f"=== Semantic Skeleton End ===\n{field_guidance}\nAfter reading", teacher_content)
+        self.assertIn(
+            "After reading the reference solution above, make sure you truly understand the reasoning. "
+            "Now, using your own words and independent reasoning",
+            teacher_content,
+        )
+        self.assertNotIn("reasoning behind each step — do not copy or paraphrase it", teacher_content)
 
     def test_collator_skeleton_mode_accepts_serialized_skeleton(self):
         from data_collator import SelfDistillationDataCollator
@@ -245,7 +254,8 @@ class OpsdSkeletonTrainingTests(unittest.TestCase):
         )
 
         teacher_content = tokenizer.chat_calls[1]["messages"][0]["content"]
-        self.assertIn("Final answer: 4", teacher_content)
+        self.assertNotIn("Final answer:", teacher_content)
+        self.assertIn("=== Semantic Skeleton Begin ===", teacher_content)
         self.assertIn('"key_objects"', teacher_content)
         self.assertIn('"name": "the expression 2+2"', teacher_content)
         self.assertNotIn("Full reference solution must not appear.", teacher_content)

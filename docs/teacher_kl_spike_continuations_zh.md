@@ -1,5 +1,7 @@
 # Teacher 在 Top-KL 位置的续写实验
 
+训练、KL-only、一体化 KL + 续写和 continuation-only 恢复命令的统一入口见 [OPSD 实验终端手册](experiment_runbook_zh.md)。
+
 本文档说明如何在 student rollout 的全局高 KL 位置，让 reference teacher 和 skeleton teacher 分别继续生成少量 token，并把三条路径并排展示：
 
 1. student 原始后续；
