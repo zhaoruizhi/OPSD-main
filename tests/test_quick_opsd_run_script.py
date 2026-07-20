@@ -55,7 +55,7 @@ class QuickOpsdRunScriptTests(unittest.TestCase):
             script.index('"${FIRST_ERROR_RESUME_ARGS[@]}"'),
         )
 
-    def test_student_teacher_category_kl_script_runs_ten_problem_student_probe(self):
+    def test_student_teacher_category_kl_script_runs_four_rollouts_and_two_kl_probes(self):
         script = Path("scripts/run_student_teacher_category_kl.sh").read_text(encoding="utf-8")
 
         self.assertIn("SAMPLE_SIZE=10", script)
@@ -64,14 +64,32 @@ class QuickOpsdRunScriptTests(unittest.TestCase):
         self.assertIn('MAX_NEW_TOKENS="1024"', script)
         self.assertIn('MAX_NEW_TOKENS="16384"', script)
         self.assertIn("--gpu-ids)", script)
-        self.assertIn("--condition student", script)
+        self.assertNotIn("--condition student", script)
+        self.assertIn('--skeleton-file "$OUT/skeletons.jsonl"', script)
+        self.assertIn('rollout_shard${gpu}.jsonl', script)
+        self.assertIn('rollouts.jsonl', script)
+        self.assertIn('rollout_summary.json', script)
         self.assertIn("--student-enable-thinking", script)
+        self.assertIn("--trajectory-condition teacher_base", script)
+        self.assertIn("--baseline-condition teacher_base", script)
+        self.assertIn('logit_probe_shard${gpu}.jsonl', script)
+        self.assertIn('logit_summary.json', script)
         self.assertIn("--trajectory-condition student", script)
         self.assertIn("--baseline-condition student", script)
         self.assertIn("--teacher-condition teacher_reference", script)
         self.assertIn("--teacher-condition teacher_skeleton", script)
-        self.assertIn("--skip-rollout-entropy", script)
+        self.assertEqual(script.count("--skip-rollout-entropy"), 1)
+        self.assertGreaterEqual(script.count("--require-context-rollouts"), 2)
+        self.assertGreaterEqual(script.count("CUDA_VISIBLE_DEVICES=$gpu"), 3)
         self.assertIn("student_teacher_category_kl_summary.json", script)
+        self.assertLess(
+            script.index("--trajectory-condition teacher_base"),
+            script.index("--trajectory-condition student"),
+        )
+        self.assertLess(
+            script.index("--trajectory-condition student"),
+            script.index("run_teacher_spike_continuations.sh"),
+        )
 
     def test_teacher_spike_runner_accepts_arbitrary_gpu_ids(self):
         script = Path("scripts/run_teacher_spike_continuations.sh").read_text(encoding="utf-8")

@@ -173,7 +173,7 @@ echo "Sample size: $SAMPLE_SIZE | Val-N: $VAL_N"
 echo "GPU ids: ${GPU_ID_ARRAY[*]} | Num shards: $NUM_SHARDS"
 
 echo
-echo "== Phase 0: 10-problem sample manifest =="
+echo "== Phase 0: shared sample manifest =="
 if [[ -n "$SAMPLE_INDICES_FILE" ]]; then
   cp "$SAMPLE_INDICES_FILE" "$OUT/sample_indices.json"
 else
@@ -187,7 +187,7 @@ fi
 cp "$SKELETON_FILE" "$OUT/skeletons.jsonl"
 
 echo
-echo "== Phase 1: student-only rollout =="
+echo "== Phase 1: four-condition rollouts =="
 pids=()
 ROLLOUT_SHARD_FILES=()
 for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
@@ -199,6 +199,7 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --split "$SPLIT" \
     --sample-size "$SAMPLE_SIZE" \
     --sample-indices-file "$OUT/sample_indices.json" \
+    --skeleton-file "$OUT/skeletons.jsonl" \
     --seed "$SEED" \
     --shard-id "$shard_id" \
     --num-shards "$NUM_SHARDS" \
@@ -209,12 +210,11 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --top-k "$TOP_K" \
     --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" \
     --max-model-len "$MAX_MODEL_LEN" \
-    --condition student \
     "${STUDENT_THINKING_ARGS[@]}" \
-    --output-file "$OUT/student_rollout_shard${gpu}.jsonl" \
-    --summary-file "$OUT/student_rollout_summary_shard${gpu}.json" &
+    --output-file "$OUT/rollout_shard${gpu}.jsonl" \
+    --summary-file "$OUT/rollout_summary_shard${gpu}.json" &
   pids+=("$!")
-  ROLLOUT_SHARD_FILES+=("$OUT/student_rollout_shard${gpu}.jsonl")
+  ROLLOUT_SHARD_FILES+=("$OUT/rollout_shard${gpu}.jsonl")
 done
 for pid in "${pids[@]}"; do
   wait "$pid"
@@ -225,22 +225,68 @@ for input_file in "${ROLLOUT_SHARD_FILES[@]}"; do
 done
 python eval/quick_jsonl_merge.py \
   "${ROLLOUT_MERGE_ARGS[@]}" \
-  --output-file "$OUT/student_rollouts.jsonl"
+  --output-file "$OUT/rollouts.jsonl"
 python eval/quick_rollout_openthoughts.py \
   --summarize-only \
-  --input-file "$OUT/student_rollouts.jsonl" \
-  --summary-file "$OUT/student_rollout_summary.json"
+  --input-file "$OUT/rollouts.jsonl" \
+  --summary-file "$OUT/rollout_summary.json"
 
 echo
-echo "== Phase 2: reference/skeleton teacher vs student category KL =="
+echo "== Phase 2: reference/skeleton teacher vs teacher_base KL and rollout entropy =="
 pids=()
-KL_SHARD_FILES=()
+BASE_KL_SHARD_FILES=()
 for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
   gpu="${GPU_ID_ARRAY[$gpu_index]}"
   shard_id="$gpu_index"
   CUDA_VISIBLE_DEVICES=$gpu python eval/quick_logit_probe.py \
     "${MODEL_ARGS[@]}" \
-    --rollout-file "$OUT/student_rollouts.jsonl" \
+    --rollout-file "$OUT/rollouts.jsonl" \
+    --skeleton-file "$OUT/skeletons.jsonl" \
+    --trajectory-condition teacher_base \
+    --baseline-condition teacher_base \
+    --teacher-condition teacher_reference \
+    --teacher-condition teacher_skeleton \
+    --trajectory-sample-index "$TRAJECTORY_SAMPLE_INDEX" \
+    --logit-size 0 \
+    --probe-tokens "$PROBE_TOKENS" \
+    --seed "$SEED" \
+    --top-k "$TOP_K" \
+    --max-context-tokens "$MAX_MODEL_LEN" \
+    --require-context-rollouts \
+    --hf-device-map "$HF_DEVICE_MAP" \
+    "${STUDENT_THINKING_ARGS[@]}" \
+    --shard-id "$shard_id" \
+    --num-shards "$NUM_SHARDS" \
+    --output-file "$OUT/logit_probe_shard${gpu}.jsonl" \
+    --summary-file "$OUT/logit_summary_shard${gpu}.json" &
+  pids+=("$!")
+  BASE_KL_SHARD_FILES+=("$OUT/logit_probe_shard${gpu}.jsonl")
+done
+for pid in "${pids[@]}"; do
+  wait "$pid"
+done
+BASE_KL_MERGE_ARGS=()
+for input_file in "${BASE_KL_SHARD_FILES[@]}"; do
+  BASE_KL_MERGE_ARGS+=(--input-file "$input_file")
+done
+python eval/quick_jsonl_merge.py \
+  "${BASE_KL_MERGE_ARGS[@]}" \
+  --output-file "$OUT/logit_probe.jsonl"
+python eval/quick_logit_probe.py \
+  --summarize-only \
+  --input-file "$OUT/logit_probe.jsonl" \
+  --summary-file "$OUT/logit_summary.json"
+
+echo
+echo "== Phase 3: reference/skeleton teacher vs student category KL =="
+pids=()
+STUDENT_KL_SHARD_FILES=()
+for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
+  gpu="${GPU_ID_ARRAY[$gpu_index]}"
+  shard_id="$gpu_index"
+  CUDA_VISIBLE_DEVICES=$gpu python eval/quick_logit_probe.py \
+    "${MODEL_ARGS[@]}" \
+    --rollout-file "$OUT/rollouts.jsonl" \
     --skeleton-file "$OUT/skeletons.jsonl" \
     --trajectory-condition student \
     --baseline-condition student \
@@ -252,6 +298,7 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --seed "$SEED" \
     --top-k "$TOP_K" \
     --max-context-tokens "$MAX_MODEL_LEN" \
+    --require-context-rollouts \
     --skip-rollout-entropy \
     --hf-device-map "$HF_DEVICE_MAP" \
     "${STUDENT_THINKING_ARGS[@]}" \
@@ -260,17 +307,17 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --output-file "$OUT/student_teacher_category_kl_shard${gpu}.jsonl" \
     --summary-file "$OUT/student_teacher_category_kl_summary_shard${gpu}.json" &
   pids+=("$!")
-  KL_SHARD_FILES+=("$OUT/student_teacher_category_kl_shard${gpu}.jsonl")
+  STUDENT_KL_SHARD_FILES+=("$OUT/student_teacher_category_kl_shard${gpu}.jsonl")
 done
 for pid in "${pids[@]}"; do
   wait "$pid"
 done
-KL_MERGE_ARGS=()
-for input_file in "${KL_SHARD_FILES[@]}"; do
-  KL_MERGE_ARGS+=(--input-file "$input_file")
+STUDENT_KL_MERGE_ARGS=()
+for input_file in "${STUDENT_KL_SHARD_FILES[@]}"; do
+  STUDENT_KL_MERGE_ARGS+=(--input-file "$input_file")
 done
 python eval/quick_jsonl_merge.py \
-  "${KL_MERGE_ARGS[@]}" \
+  "${STUDENT_KL_MERGE_ARGS[@]}" \
   --output-file "$OUT/student_teacher_category_kl.jsonl"
 python eval/quick_logit_probe.py \
   --summarize-only \
@@ -279,7 +326,7 @@ python eval/quick_logit_probe.py \
 
 if [[ "$SKIP_TEACHER_CONTINUATIONS" -eq 0 ]]; then
   echo
-  echo "== Phase 3: global Top-KL teacher continuations =="
+  echo "== Phase 4: global Top-KL teacher continuations =="
   bash scripts/run_teacher_spike_continuations.sh \
     "${MODEL_ARGS[@]}" \
     --out "$OUT" \
