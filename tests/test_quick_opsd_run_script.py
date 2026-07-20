@@ -107,12 +107,27 @@ class QuickOpsdRunScriptTests(unittest.TestCase):
     def test_category_kl_runner_integrates_teacher_spike_phase(self):
         script = Path("scripts/run_student_teacher_category_kl.sh").read_text(encoding="utf-8")
 
+        self.assertIn("quick_teacher_base_kl_report.py", script)
+        self.assertIn(
+            "visualizations/teacher_base_kl_reference_vs_skeleton_report.html", script
+        )
+        self.assertIn(
+            "visualizations/teacher_base_kl_reference_vs_skeleton_top_spikes.csv", script
+        )
+        self.assertIn(
+            "visualizations/teacher_base_top_distribution_spikes.jsonl", script
+        )
+        self.assertGreater(
+            script.index("quick_teacher_base_kl_report.py"),
+            script.index('--summary-file "$OUT/logit_summary.json"'),
+        )
         self.assertIn("run_teacher_spike_continuations.sh", script)
         self.assertIn("--teacher-continuation-top-n", script)
         self.assertIn("--teacher-continuation-max-new-tokens", script)
         self.assertIn("--skip-teacher-continuations", script)
         self.assertIn("quick_jsonl_merge.py", script)
         self.assertIn('--kl-file "$OUT/student_teacher_category_kl.jsonl"', script)
+        self.assertIn('--student-rollout-file "$OUT/rollouts.jsonl"', script)
 
 
 if __name__ == "__main__":

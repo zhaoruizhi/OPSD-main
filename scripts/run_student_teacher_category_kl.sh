@@ -278,6 +278,17 @@ python eval/quick_logit_probe.py \
   --summary-file "$OUT/logit_summary.json"
 
 echo
+echo "== Phase 2b: teacher_base KL comparison report =="
+python eval/quick_teacher_base_kl_report.py \
+  --logit-file "$OUT/logit_probe.jsonl" \
+  --rollout-file "$OUT/rollouts.jsonl" \
+  --rollout-summary-file "$OUT/rollout_summary.json" \
+  --skeleton-file "$OUT/skeletons.jsonl" \
+  --csv-file "$OUT/visualizations/teacher_base_kl_reference_vs_skeleton_top_spikes.csv" \
+  --spikes-jsonl-file "$OUT/visualizations/teacher_base_top_distribution_spikes.jsonl" \
+  --report-file "$OUT/visualizations/teacher_base_kl_reference_vs_skeleton_report.html"
+
+echo
 echo "== Phase 3: reference/skeleton teacher vs student category KL =="
 pids=()
 STUDENT_KL_SHARD_FILES=()
@@ -331,6 +342,7 @@ if [[ "$SKIP_TEACHER_CONTINUATIONS" -eq 0 ]]; then
     "${MODEL_ARGS[@]}" \
     --out "$OUT" \
     --kl-file "$OUT/student_teacher_category_kl.jsonl" \
+    --student-rollout-file "$OUT/rollouts.jsonl" \
     --gpu-ids "$GPU_IDS" \
     --top-n "$TEACHER_CONTINUATION_TOP_N" \
     --max-new-tokens "$TEACHER_CONTINUATION_MAX_NEW_TOKENS" \
@@ -339,11 +351,15 @@ if [[ "$SKIP_TEACHER_CONTINUATIONS" -eq 0 ]]; then
 fi
 
 echo
-echo "Student-teacher category KL complete."
-echo "Sample manifest:  $OUT/sample_indices.json"
-echo "Student rollouts: $OUT/student_rollouts.jsonl"
-echo "KL records:       $OUT/student_teacher_category_kl.jsonl"
-echo "KL summary:       $OUT/student_teacher_category_kl_summary.json"
+echo "Dual-KL semantic-skeleton ablation complete."
+echo "Sample manifest:       $OUT/sample_indices.json"
+echo "Four-condition rollout: $OUT/rollouts.jsonl"
+echo "Performance/token length: $OUT/rollout_summary.json"
+echo "Teacher-base KL records: $OUT/logit_probe.jsonl"
+echo "Teacher-base KL summary: $OUT/logit_summary.json"
+echo "Teacher-base KL report:  $OUT/visualizations/teacher_base_kl_reference_vs_skeleton_report.html"
+echo "Student-target KL records: $OUT/student_teacher_category_kl.jsonl"
+echo "Student-target KL summary: $OUT/student_teacher_category_kl_summary.json"
 if [[ "$SKIP_TEACHER_CONTINUATIONS" -eq 0 ]]; then
-  echo "Teacher report:    $OUT/visualizations/teacher_spike_continuations.html"
+  echo "Teacher continuation report: $OUT/visualizations/teacher_spike_continuations.html"
 fi
