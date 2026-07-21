@@ -260,21 +260,134 @@ class OpsdSkeletonTrainingTests(unittest.TestCase):
         self.assertIn('"name": "the expression 2+2"', teacher_content)
         self.assertNotIn("Full reference solution must not appear.", teacher_content)
 
+    def test_collator_legacy_profile_matches_validated_20260629_prompt(self):
+        from data_collator import SelfDistillationDataCollator
+        from eval.quick_opsd_common import build_semantic_skeleton_user_message
+
+        tokenizer = FakeTokenizer()
+        collator = SelfDistillationDataCollator(
+            tokenizer=tokenizer,
+            teacher_context_mode="skeleton",
+            teacher_prompt_profile="legacy-20260629",
+            reason_first=False,
+        )
+        skeleton = {
+            "final_answer": "4",
+            "key_objects": [],
+            "subgoals": ["evaluate the sum"],
+            "critical_intermediates": ["2+2=4"],
+            "theorem_tags": [],
+            "checks": ["verify the arithmetic"],
+        }
+
+        collator(
+            [
+                {
+                    "problem": "Compute 2+2.",
+                    "solution": "Full reference solution must not appear.",
+                    "ground_truth": "4",
+                    "semantic_skeleton": skeleton,
+                }
+            ]
+        )
+
+        teacher_content = tokenizer.chat_calls[1]["messages"][0]["content"]
+        expected = build_semantic_skeleton_user_message(
+            "Compute 2+2.",
+            skeleton,
+            ground_truth="4",
+            teacher_prompt_profile="legacy-20260629",
+        )
+        self.assertEqual(teacher_content, expected)
+        self.assertIn(
+            "Here is a style-neutral semantic skeleton extracted from a reference solution:",
+            teacher_content,
+        )
+        self.assertIn('"checks": [', teacher_content)
+        self.assertNotIn('"check": [', teacher_content)
+        self.assertGreater(
+            teacher_content.index("Final answer: 4"),
+            teacher_content.index("=== Semantic Skeleton End ==="),
+        )
+        self.assertNotIn("Full reference solution must not appear.", teacher_content)
+
     def test_skeleton_run_script_uses_skeleton_mode_and_distinct_run_config(self):
         script = Path("scripts/run_opsd_1b_skeleton.sh").read_text(encoding="utf-8")
 
         self.assertIn("SKELETON_FILE=", script)
+        self.assertIn(
+            'TEACHER_PROMPT_PROFILE="${TEACHER_PROMPT_PROFILE:-current-style-neutral}"',
+            script,
+        )
+        self.assertIn(
+            'RUN_CONFIG="${RUN_CONFIG:-qwen31b_gen1024_skeleton_fixteacher_temp11_forwardbeta0_clip005}"',
+            script,
+        )
+        self.assertIn(
+            'MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/home/ruizzhao/OPSD-main/models/Qwen3-1.7B}"',
+            script,
+        )
+        self.assertIn(
+            'OUTPUT_DIR="${OUTPUT_DIR:-/home/ruizzhao/OPSD-main/outputs/opsd/}"',
+            script,
+        )
         self.assertIn('TRAIN_GPU_IDS="${TRAIN_GPU_IDS:-0,1,2,3}"', script)
         self.assertIn('NUM_PROCESSES="${NUM_PROCESSES:-4}"', script)
         self.assertIn('MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-12949}"', script)
         self.assertIn('CUDA_VISIBLE_DEVICES="$TRAIN_GPU_IDS" accelerate launch', script)
         self.assertIn('--num_processes "$NUM_PROCESSES"', script)
         self.assertIn('--main_process_port "$MAIN_PROCESS_PORT"', script)
-        self.assertIn("--run_config qwen31b_gen1024_skeleton_fixteacher_temp11_forwardbeta0_clip005", script)
+        self.assertIn('--model_name_or_path "$MODEL_NAME_OR_PATH"', script)
+        self.assertIn('--output_dir "$OUTPUT_DIR"', script)
+        self.assertIn('--run_config "$RUN_CONFIG"', script)
         self.assertIn("--teacher_context_mode skeleton", script)
+        self.assertIn('--teacher_prompt_profile "$TEACHER_PROMPT_PROFILE"', script)
         self.assertIn('--skeleton_file "$SKELETON_FILE"', script)
         self.assertIn("--skeleton_subset_policy error", script)
         self.assertIn("--report_to wandb", script)
+
+    def test_training_entrypoint_propagates_teacher_prompt_profile_to_collator(self):
+        train_source = Path("opsd_train.py").read_text(encoding="utf-8")
+        trainer_source = Path("opsd_trainer.py").read_text(encoding="utf-8")
+
+        self.assertIn("teacher_prompt_profile: str = field(", train_source)
+        self.assertIn(
+            '"choices": ["current-style-neutral", "legacy-20260629"]',
+            train_source,
+        )
+        self.assertIn(
+            '"teacher_prompt_profile": script_args.teacher_prompt_profile',
+            train_source,
+        )
+        self.assertIn(
+            "teacher_prompt_profile=script_args.teacher_prompt_profile",
+            train_source,
+        )
+        self.assertIn("teacher_prompt_profile: str = DEFAULT_TEACHER_PROMPT_PROFILE", trainer_source)
+        self.assertIn("teacher_prompt_profile=teacher_prompt_profile", trainer_source)
+        self.assertIn("self.teacher_prompt_profile = teacher_prompt_profile", trainer_source)
+
+    def test_training_entrypoint_writes_rank_zero_manifest_before_wandb(self):
+        train_source = Path("opsd_train.py").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "from training_experiment_manifest import write_training_experiment_manifest",
+            train_source,
+        )
+        self.assertIn(
+            'Path(training_args.output_dir) / "experiment_config.json"',
+            train_source,
+        )
+        self.assertIn("script_args=script_args", train_source)
+        self.assertIn("training_args=training_args", train_source)
+        self.assertIn("model_args=model_args", train_source)
+        self.assertIn("skeleton_file=script_args.skeleton_file", train_source)
+        self.assertIn("argv=sys.argv", train_source)
+        self.assertIn("environ=os.environ", train_source)
+        self.assertLess(
+            train_source.index("write_training_experiment_manifest("),
+            train_source.index("wandb.init("),
+        )
 
     def test_reference_run_script_supports_gpu_selection_and_wandb(self):
         script = Path("scripts/run_opsd_1b.sh").read_text(encoding="utf-8")
@@ -302,6 +415,28 @@ class OpsdSkeletonTrainingTests(unittest.TestCase):
         self.assertIn("on_policy_loss", doc)
         self.assertIn("grad_norm", doc)
         self.assertIn("learning_rate", doc)
+        self.assertIn("legacy-20260629 skeleton prompt 全量训练", doc)
+        self.assertIn("TEACHER_PROMPT_PROFILE=legacy-20260629", doc)
+        self.assertIn(
+            "qwen31b_gen1024_skeleton_legacy20260629_fixteacher_temp11_forwardbeta0_clip005",
+            doc,
+        )
+        self.assertIn(
+            "/home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl",
+            doc,
+        )
+        self.assertIn("只有 128 条", doc)
+        self.assertIn("experiment_config.json", doc)
+        self.assertIn("max_completion_length=1024", doc)
+
+        runbook = Path("docs/experiment_runbook_zh.md").read_text(encoding="utf-8")
+        self.assertIn("### 复刻 2026-06-29 prompt 的全量训练", runbook)
+        self.assertIn("TEACHER_PROMPT_PROFILE=legacy-20260629", runbook)
+        self.assertIn(
+            "qwen31b_gen1024_skeleton_legacy20260629_fixteacher_temp11_forwardbeta0_clip005",
+            runbook,
+        )
+        self.assertIn("experiment_config.json", runbook)
 
 
 if __name__ == "__main__":

@@ -104,6 +104,51 @@ qwen31b_gen1024_skeleton_fixteacher_temp11_forwardbeta0_clip005
 
 reference 和 skeleton 公平对比时使用相同 GPU 数量、训练超参和 checkpoint 步数，但用不同的 `MAIN_PROCESS_PORT` 并分别启动。
 
+训练脚本支持两种 skeleton teacher prompt：
+
+| `TEACHER_PROMPT_PROFILE` | skeleton 是否看见答案 | JSON 检查字段 |
+| --- | --- | --- |
+| `current-style-neutral`（默认） | 否 | `check` |
+| `legacy-20260629` | 是，在 skeleton block 后有单独的 `Final answer:` | `checks` |
+
+### 复刻 2026-06-29 prompt 的全量训练
+
+KL 复刻目录中的 `skeletons.jsonl` 只有 128 条，不可用于全量训练。这里使用覆盖约 29.4k train split 的全量文件，同时只把已验证的旧 prompt 引入训练；训练 rollout 仍保持 `max_completion_length=1024`。
+
+```bash
+cd /home/ruizzhao/OPSD-main
+git pull --ff-only origin main
+
+export SKELETON_FILE=/home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl
+export TEACHER_PROMPT_PROFILE=legacy-20260629
+export RUN_CONFIG=qwen31b_gen1024_skeleton_legacy20260629_fixteacher_temp11_forwardbeta0_clip005
+export MODEL_NAME_OR_PATH=/home/ruizzhao/OPSD-main/models/Qwen3-1.7B
+export OUTPUT_DIR=/home/ruizzhao/OPSD-main/outputs/opsd/
+
+export TRAIN_GPU_IDS=4,5,6,7
+export NUM_PROCESSES=4
+export MAIN_PROCESS_PORT=12950
+
+test -f "$SKELETON_FILE"
+wc -l "$SKELETON_FILE"
+wandb status
+
+bash scripts/run_opsd_1b_skeleton.sh
+```
+
+训练启动后确认终端打印 `Teacher Prompt Profile: legacy-20260629`，并确认完整训练行数没有被过滤。最终目录为：
+
+```text
+/home/ruizzhao/OPSD-main/outputs/opsd/qwen31b_gen1024_skeleton_legacy20260629_fixteacher_temp11_forwardbeta0_clip005/
+```
+
+rank 0 会在其中生成 `experiment_config.json`，记录解析后的全部 script/training/model 参数、命令行、GPU/分布式环境、Git commit/dirty 状态以及 skeleton 文件 SHA-256：
+
+```bash
+TRAIN_OUT="$OUTPUT_DIR/$RUN_CONFIG"
+sed -n '1,240p' "$TRAIN_OUT/experiment_config.json"
+```
+
 ## 3. 一次跑完四路 rollout、两套 KL 和 teacher 续写
 
 `scripts/run_student_teacher_category_kl.sh` 现在依次运行：

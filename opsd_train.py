@@ -1,5 +1,7 @@
 import os
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import wandb
@@ -19,6 +21,7 @@ from trl import (
 from trl.experimental.gold import GOLDConfig
 from opsd_trainer import OPSDTrainer
 from opsd_skeleton import attach_skeletons_to_training_rows, serialize_semantic_skeleton
+from training_experiment_manifest import write_training_experiment_manifest
 
 # Enable logging in a Hugging Face Space
 os.environ.setdefault("TRACKIO_SPACE_ID", "trl-trackio")
@@ -116,6 +119,13 @@ class CustomScriptArguments(ScriptArguments):
             "choices": ["reference", "skeleton"],
         },
     )
+    teacher_prompt_profile: str = field(
+        default="current-style-neutral",
+        metadata={
+            "help": "Prompt template profile used for skeleton teacher context.",
+            "choices": ["current-style-neutral", "legacy-20260629"],
+        },
+    )
     skeleton_file: Optional[str] = field(
         default=None,
         metadata={
@@ -156,8 +166,6 @@ if __name__ == "__main__":
         full_wandb_run_config = f"{script_args.run_config}_lr{lr_str}_bs{effective_batch_size}"
         # Append run_config to output_dir if it doesn't already end with it
         if not training_args.output_dir.endswith(script_args.run_config):
-            from pathlib import Path
-
             training_args.output_dir = str(Path(training_args.output_dir) / script_args.run_config)
     else:
         # Extract model name from path (e.g., "Qwen3-1.7B" from "/home/siyanzhao/models/Qwen3-1.7B")
@@ -181,6 +189,7 @@ if __name__ == "__main__":
     print(f"{'='*80}")
     print(f"WandB Run Name: {full_wandb_run_config}")
     print(f"Output Directory: {training_args.output_dir}")
+    print(f"Teacher Prompt Profile: {script_args.teacher_prompt_profile}")
     print(f"{'='*80}\n")
 
     ################
@@ -198,6 +207,18 @@ if __name__ == "__main__":
 
     # Only initialize wandb on main process (LOCAL_RANK 0 or not set)
     if os.environ.get("LOCAL_RANK", "0") == "0":
+        manifest_file = Path(training_args.output_dir) / "experiment_config.json"
+        write_training_experiment_manifest(
+            manifest_file,
+            script_args=script_args,
+            training_args=training_args,
+            model_args=model_args,
+            skeleton_file=script_args.skeleton_file,
+            repo_root=Path(__file__).resolve().parent,
+            argv=sys.argv,
+            environ=os.environ,
+        )
+        print(f"Training experiment config: {manifest_file}")
         wandb.init(
             entity=training_args.wandb_entity,
             project=training_args.wandb_project,
@@ -225,6 +246,7 @@ if __name__ == "__main__":
                 "use_ema_teacher": script_args.use_ema_teacher,
                 "ema_decay": script_args.ema_decay if script_args.use_ema_teacher else None,
                 "teacher_context_mode": script_args.teacher_context_mode,
+                "teacher_prompt_profile": script_args.teacher_prompt_profile,
                 "skeleton_file": script_args.skeleton_file,
                 "skeleton_subset_policy": (
                     script_args.skeleton_subset_policy
@@ -336,6 +358,7 @@ if __name__ == "__main__":
         student_thinking=script_args.student_thinking,
         teacher_thinking=script_args.teacher_thinking,
         teacher_context_mode=script_args.teacher_context_mode,
+        teacher_prompt_profile=script_args.teacher_prompt_profile,
     )
 
     if training_args.eval_strategy != "no":

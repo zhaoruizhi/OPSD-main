@@ -1,30 +1,14 @@
-import json
-
 import torch
 
+from eval.quick_opsd_common import (
+    DEFAULT_TEACHER_PROMPT_PROFILE,
+    build_semantic_skeleton_user_message,
+    validate_teacher_prompt_profile,
+)
 from opsd_skeleton import normalize_semantic_skeleton
 
 
 TEACHER_CONTEXT_MODES = {"reference", "skeleton"}
-
-SEMANTIC_SKELETON_FIELD_GUIDANCE = (
-    'Interpret the fields as follows:\n'
-    '"key_objects" records potentially important mathematical objects and constraints.\n'
-    '"subgoals" records possible mathematical objectives.\n'
-    '"critical_intermediates" records potentially useful mathematical checkpoints. '
-    'They are not mandatory generated sentences and do not imply that the reference path is the only valid path.\n'
-    '"theorem_tags" records optional and non-exclusive methods. '
-    'Do not force a listed theorem when another valid approach is more natural.\n'
-    '"check" records validity conditions or possible failure modes. '
-    'Apply a check only when it is relevant to the reasoning being used.'
-)
-
-SEMANTIC_SKELETON_TRANSITION_PROMPT = (
-    "After reading the reference solution above, make sure you truly understand the reasoning. "
-    "Now, using your own words and independent reasoning, derive the same final answer to the problem above. "
-    "Think step by step, explore different approaches, and don't be afraid to backtrack "
-    "or reconsider if something doesn't work out:"
-)
 
 
 class SelfDistillationDataCollator:
@@ -46,6 +30,7 @@ class SelfDistillationDataCollator:
         student_thinking=False,
         teacher_thinking=True,
         teacher_context_mode="reference",
+        teacher_prompt_profile=DEFAULT_TEACHER_PROMPT_PROFILE,
     ):
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -53,6 +38,7 @@ class SelfDistillationDataCollator:
         self.student_thinking = student_thinking
         self.teacher_thinking = teacher_thinking
         self.teacher_context_mode = teacher_context_mode
+        self.teacher_prompt_profile = validate_teacher_prompt_profile(teacher_prompt_profile)
 
         if self.teacher_context_mode not in TEACHER_CONTEXT_MODES:
             raise ValueError(
@@ -84,6 +70,7 @@ class SelfDistillationDataCollator:
         print(f"[DataCollator] Set padding_side to: {self.tokenizer.padding_side}")
         print(f"[DataCollator] Reason first mode: {self.reason_first}")
         print(f"[DataCollator] Teacher context mode: {self.teacher_context_mode}")
+        print(f"[DataCollator] Teacher prompt profile: {self.teacher_prompt_profile}")
 
     def __call__(self, features):
 
@@ -257,22 +244,9 @@ class SelfDistillationDataCollator:
             raise ValueError("semantic_skeleton is required when teacher_context_mode='skeleton'")
 
         normalized_skeleton = normalize_semantic_skeleton(skeleton)
-        skeleton_without_answer = {
-            key: value for key, value in normalized_skeleton.items() if key != "final_answer"
-        }
-        skeleton_without_answer["check"] = skeleton_without_answer.pop("checks")
-        skeleton_json = json.dumps(
-            skeleton_without_answer,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-
-        return (
-            f"Problem: {problem}\n"
-            "Below is a style-neutral semantic skeleton extracted from a reference solution.\n"
-            f"=== Semantic Skeleton Begin ===\n{skeleton_json}\n=== Semantic Skeleton End ===\n"
-            f"{SEMANTIC_SKELETON_FIELD_GUIDANCE}\n"
-            f"{SEMANTIC_SKELETON_TRANSITION_PROMPT}\n"
-            "Please reason step by step, and put your final answer within \\boxed{}."
+        return build_semantic_skeleton_user_message(
+            problem,
+            normalized_skeleton,
+            ground_truth=feature.get("ground_truth"),
+            teacher_prompt_profile=self.teacher_prompt_profile,
         )

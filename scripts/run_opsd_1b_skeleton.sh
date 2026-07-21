@@ -2,6 +2,10 @@
 set -euo pipefail
 
 SKELETON_FILE="${SKELETON_FILE:-/home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl}"
+TEACHER_PROMPT_PROFILE="${TEACHER_PROMPT_PROFILE:-current-style-neutral}"
+RUN_CONFIG="${RUN_CONFIG:-qwen31b_gen1024_skeleton_fixteacher_temp11_forwardbeta0_clip005}"
+MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/home/ruizzhao/OPSD-main/models/Qwen3-1.7B}"
+OUTPUT_DIR="${OUTPUT_DIR:-/home/ruizzhao/OPSD-main/outputs/opsd/}"
 TRAIN_GPU_IDS="${TRAIN_GPU_IDS:-0,1,2,3}"
 NUM_PROCESSES="${NUM_PROCESSES:-4}"
 MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-12949}"
@@ -12,14 +16,14 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPU_IDS" accelerate launch \
     --gradient_accumulation_steps 2 \
     --main_process_port "$MAIN_PROCESS_PORT" \
     opsd_train.py \
-    --model_name_or_path /home/ruizzhao/OPSD-main/models/Qwen3-1.7B \
+    --model_name_or_path "$MODEL_NAME_OR_PATH" \
     --learning_rate 5e-6 \
     --max_grad_norm 0.1 \
     --per_device_train_batch_size 4 \
     --gradient_checkpointing \
     --gradient_accumulation_steps 2 \
-    --output_dir  /home/ruizzhao/OPSD-main/outputs/opsd/ \
-    --run_config qwen31b_gen1024_skeleton_fixteacher_temp11_forwardbeta0_clip005 \
+    --output_dir "$OUTPUT_DIR" \
+    --run_config "$RUN_CONFIG" \
     --num_train_epochs 30 \
     --max_completion_length 1024 \
     --save_steps 25 \
@@ -43,6 +47,7 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPU_IDS" accelerate launch \
     --fixed_teacher \
     --jsd_token_clip 0.05 \
     --teacher_context_mode skeleton \
+    --teacher_prompt_profile "$TEACHER_PROMPT_PROFILE" \
     --skeleton_file "$SKELETON_FILE" \
     --skeleton_subset_policy error \
     --report_to wandb \

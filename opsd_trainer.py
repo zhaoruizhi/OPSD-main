@@ -62,6 +62,7 @@ from trl.trainer.utils import (
 )
 from trl.experimental.gold.gold_config import GOLDConfig
 from data_collator import SelfDistillationDataCollator
+from eval.quick_opsd_common import DEFAULT_TEACHER_PROMPT_PROFILE
 
 
 if is_peft_available():
@@ -145,6 +146,7 @@ class OPSDTrainer(SFTTrainer):
         student_thinking: bool = False,
         teacher_thinking: bool = True,
         teacher_context_mode: str = "reference",
+        teacher_prompt_profile: str = DEFAULT_TEACHER_PROMPT_PROFILE,
     ):
         self.model_name_or_path = model if isinstance(model, str) else model.config._name_or_path
         self.model_revision = getattr(args, "student_model_revision", None)
@@ -161,6 +163,7 @@ class OPSDTrainer(SFTTrainer):
                 student_thinking=student_thinking,
                 teacher_thinking=teacher_thinking,
                 teacher_context_mode=teacher_context_mode,
+                teacher_prompt_profile=teacher_prompt_profile,
             )
 
         super().__init__(
@@ -189,6 +192,7 @@ class OPSDTrainer(SFTTrainer):
         self.fixed_teacher = fixed_teacher
         self.reason_first = reason_first
         self.teacher_context_mode = teacher_context_mode
+        self.teacher_prompt_profile = teacher_prompt_profile
         self.top_k_loss = top_k_loss
         self.jsd_token_clip = jsd_token_clip
         self.use_ema_teacher = use_ema_teacher
