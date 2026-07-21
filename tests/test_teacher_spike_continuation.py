@@ -139,6 +139,39 @@ class TeacherSpikePrefixTests(unittest.TestCase):
         self.assertEqual(case["student_token_text"], "1")
         self.assertEqual(case["student_prefix_token_count"], 1)
 
+    def test_prepare_spike_case_retokenizes_text_for_legacy_kl_positions(self):
+        from eval.quick_teacher_spike_continuation import prepare_spike_case
+
+        class TextTokenizer(FakeTokenizer):
+            def __call__(self, text, add_special_tokens=False):
+                return {"input_ids": [ord(char) for char in text]}
+
+        spike = {
+            "rank": 1,
+            "problem_id": "7",
+            "sample_index": 0,
+            "target_condition": "student",
+            "target_token_source": "target_tail_text",
+            "position": 1,
+            "max_kl": 9.0,
+            "reference_kl": 1.0,
+            "skeleton_kl": 9.0,
+        }
+        rollout = {
+            "problem_id": 7,
+            "sample_index": 0,
+            "condition": "student",
+            "problem": "P",
+            "solution": "S",
+            "full_generation": "ABC",
+            "completion_token_ids": [1, 2, 3],
+        }
+
+        case = prepare_spike_case(spike, rollout, TextTokenizer(), display_tokens=2)
+
+        self.assertEqual(case["completion_token_ids"], [65, 66, 67])
+        self.assertEqual(case["student_token_text"], "66")
+
     def test_teacher_input_reuses_condition_prompt_builder_and_exact_prefix(self):
         from eval.quick_teacher_spike_continuation import teacher_input_ids_for_case
 
@@ -154,12 +187,17 @@ class TeacherSpikePrefixTests(unittest.TestCase):
                 skeletons={},
                 max_new_tokens=20,
                 max_context_tokens=100,
+                teacher_prompt_profile="legacy-20260629",
             )
 
         self.assertEqual(input_ids, [10, 11, 20])
         self.assertEqual(prompt_count, 2)
         self.assertEqual(source, "reconstructed_prompt_text")
         self.assertEqual(prompt_builder.call_args.kwargs["condition"], "teacher_reference")
+        self.assertEqual(
+            prompt_builder.call_args.kwargs["teacher_prompt_profile"],
+            "legacy-20260629",
+        )
 
 
 class TeacherSpikeReportTests(unittest.TestCase):

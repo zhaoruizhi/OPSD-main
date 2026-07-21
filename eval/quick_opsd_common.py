@@ -19,6 +19,14 @@ from typing import Any, Iterable
 
 TOKEN_CATEGORY_NAMES = ("style", "math", "other")
 
+CURRENT_TEACHER_PROMPT_PROFILE = "current-style-neutral"
+LEGACY_20260629_TEACHER_PROMPT_PROFILE = "legacy-20260629"
+TEACHER_PROMPT_PROFILES = (
+    CURRENT_TEACHER_PROMPT_PROFILE,
+    LEGACY_20260629_TEACHER_PROMPT_PROFILE,
+)
+DEFAULT_TEACHER_PROMPT_PROFILE = CURRENT_TEACHER_PROMPT_PROFILE
+
 SEMANTIC_SKELETON_FIELD_GUIDANCE = (
     'Interpret the fields as follows:\n'
     '"key_objects" records potentially important mathematical objects and constraints.\n'
@@ -304,7 +312,28 @@ def _ground_truth_line(ground_truth: str | None) -> str:
     return f"Final answer: {ground_truth}\n\n"
 
 
-def build_reference_user_message(problem: str, solution: str, ground_truth: str | None = None) -> str:
+def _legacy_answer_line(answer: str | None) -> str:
+    if answer in (None, ""):
+        return ""
+    return f"\nFinal answer: {answer}\n"
+
+
+def validate_teacher_prompt_profile(teacher_prompt_profile: str) -> str:
+    if teacher_prompt_profile not in TEACHER_PROMPT_PROFILES:
+        choices = ", ".join(TEACHER_PROMPT_PROFILES)
+        raise ValueError(
+            f"unknown teacher prompt profile: {teacher_prompt_profile!r}; expected one of: {choices}"
+        )
+    return teacher_prompt_profile
+
+
+def build_reference_user_message(
+    problem: str,
+    solution: str,
+    ground_truth: str | None = None,
+    teacher_prompt_profile: str = DEFAULT_TEACHER_PROMPT_PROFILE,
+) -> str:
+    teacher_prompt_profile = validate_teacher_prompt_profile(teacher_prompt_profile)
     transition_prompt = (
         "After reading the reference solution above, make sure you truly understand "
         "the reasoning behind each step - do not copy or paraphrase it. Now, using your "
@@ -312,6 +341,15 @@ def build_reference_user_message(problem: str, solution: str, ground_truth: str 
         "Think step by step, explore different approaches, and don't be afraid to backtrack "
         "or reconsider if something doesn't work out:\n"
     )
+    if teacher_prompt_profile == LEGACY_20260629_TEACHER_PROMPT_PROFILE:
+        return (
+            f"Problem: {problem}\n\n"
+            "Here is a reference solution to this problem:\n"
+            f"=== Reference Solution Begin ===\n{solution}\n=== Reference Solution End ===\n"
+            f"{_legacy_answer_line(ground_truth)}"
+            f"\n\n{transition_prompt}\n"
+            "Please reason step by step, and put your final answer within \\boxed{}."
+        )
     return (
         f"Problem: {problem}\n\n"
         f"{_ground_truth_line(ground_truth)}"
@@ -352,11 +390,35 @@ def build_semantic_skeleton_user_message(
     problem: str,
     skeleton: dict[str, Any],
     ground_truth: str | None = None,
+    teacher_prompt_profile: str = DEFAULT_TEACHER_PROMPT_PROFILE,
 ) -> str:
+    teacher_prompt_profile = validate_teacher_prompt_profile(teacher_prompt_profile)
     normalized_skeleton = normalize_semantic_skeleton(skeleton)
     skeleton_without_answer = {
         key: value for key, value in normalized_skeleton.items() if key != "final_answer"
     }
+    if teacher_prompt_profile == LEGACY_20260629_TEACHER_PROMPT_PROFILE:
+        final_answer = (
+            ground_truth
+            if ground_truth not in (None, "")
+            else normalized_skeleton.get("final_answer")
+        )
+        skeleton_json = json.dumps(
+            skeleton_without_answer,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        return (
+            f"Problem: {problem}\n\n"
+            "Here is a style-neutral semantic skeleton extracted from a reference solution:\n"
+            f"=== Semantic Skeleton Begin ===\n{skeleton_json}\n=== Semantic Skeleton End ===\n"
+            f"{_legacy_answer_line(final_answer)}"
+            "\nUse the semantic skeleton above only as privileged mathematical guidance. "
+            "Do not copy or paraphrase any reference wording; reason in your own words, "
+            "fill in the missing derivation, and derive the same final answer independently.\n\n"
+            "Please reason step by step, and put your final answer within \\boxed{}."
+        )
     skeleton_without_answer["check"] = skeleton_without_answer.pop("checks")
     skeleton_json = json.dumps(
         skeleton_without_answer,

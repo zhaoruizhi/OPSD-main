@@ -15,11 +15,25 @@ from typing import Any
 try:
     from .quick_jsonl_merge import iter_jsonl_records
     from .quick_logit_probe import context_prompt_ids_for_condition, lora_adapter_exists
-    from .quick_opsd_common import read_skeleton_file, shard_items, write_json, write_jsonl
+    from .quick_opsd_common import (
+        DEFAULT_TEACHER_PROMPT_PROFILE,
+        TEACHER_PROMPT_PROFILES,
+        read_skeleton_file,
+        shard_items,
+        write_json,
+        write_jsonl,
+    )
 except ImportError:  # pragma: no cover
     from quick_jsonl_merge import iter_jsonl_records
     from quick_logit_probe import context_prompt_ids_for_condition, lora_adapter_exists
-    from quick_opsd_common import read_skeleton_file, shard_items, write_json, write_jsonl
+    from quick_opsd_common import (
+        DEFAULT_TEACHER_PROMPT_PROFILE,
+        TEACHER_PROMPT_PROFILES,
+        read_skeleton_file,
+        shard_items,
+        write_json,
+        write_jsonl,
+    )
 
 
 REFERENCE_LABEL = "reference"
@@ -37,6 +51,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kl-file")
     parser.add_argument("--student-rollout-file")
     parser.add_argument("--skeleton-file")
+    parser.add_argument(
+        "--teacher-prompt-profile",
+        choices=TEACHER_PROMPT_PROFILES,
+        default=DEFAULT_TEACHER_PROMPT_PROFILE,
+    )
     parser.add_argument("--output-file")
     parser.add_argument("--top-n", type=int, default=10)
     parser.add_argument("--max-new-tokens", type=int, default=20)
@@ -165,11 +184,17 @@ def select_global_spikes(
                     "problem_id": key[0],
                     "sample_index": key[1],
                     "target_condition": key[2],
+                    "target_token_source": record.get("target_token_source"),
                     "position": key[3],
                     "student_token_text": token_texts[position] if position < len(token_texts) else "",
                     "max_kl": float(kl_value),
                 },
             )
+            if row.get("target_token_source") != record.get("target_token_source"):
+                raise ValueError(
+                    "Reference and skeleton KL records use different target token sources for "
+                    f"problem={key[0]} sample={key[1]} position={key[3]}"
+                )
             row["max_kl"] = max(float(row["max_kl"]), float(kl_value))
 
     selected = sorted(
@@ -267,7 +292,11 @@ def prepare_spike_case(
     display_tokens: int,
     context_tokens: int = 48,
 ) -> dict[str, Any]:
-    completion_ids = _token_ids(rollout.get("completion_token_ids"))
+    if str(spike.get("target_token_source") or "") == "target_tail_text":
+        encoded = tokenizer(str(rollout.get("full_generation") or ""), add_special_tokens=False)
+        completion_ids = _token_ids(encoded.get("input_ids"))
+    else:
+        completion_ids = _token_ids(rollout.get("completion_token_ids"))
     position = _as_int(spike.get("position"), -1)
     if position < 0 or position >= len(completion_ids):
         raise ValueError(
@@ -296,12 +325,14 @@ def teacher_input_ids_for_case(
     skeletons: dict[int, dict[str, Any]],
     max_new_tokens: int,
     max_context_tokens: int,
+    teacher_prompt_profile: str = DEFAULT_TEACHER_PROMPT_PROFILE,
 ) -> tuple[list[int], int, str]:
     prompt_ids, prompt_source = context_prompt_ids_for_condition(
         tokenizer=tokenizer,
         case=case,
         condition=condition,
         skeletons=skeletons,
+        teacher_prompt_profile=teacher_prompt_profile,
     )
     completion_ids = _token_ids(case.get("completion_token_ids"))
     input_ids = build_generation_input_ids(
@@ -428,6 +459,7 @@ def run_worker(args: argparse.Namespace) -> list[dict[str, Any]]:
                 skeletons=skeletons,
                 max_new_tokens=args.max_new_tokens,
                 max_context_tokens=args.max_context_tokens,
+                teacher_prompt_profile=args.teacher_prompt_profile,
             )
             generated = generate_greedy_continuation(
                 model=model,
@@ -449,6 +481,7 @@ def run_worker(args: argparse.Namespace) -> list[dict[str, Any]]:
             "top_n": args.top_n,
             "max_new_tokens": args.max_new_tokens,
             "max_context_tokens": args.max_context_tokens,
+            "teacher_prompt_profile": args.teacher_prompt_profile,
         }
         output_records.append(case)
 

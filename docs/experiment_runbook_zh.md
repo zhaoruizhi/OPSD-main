@@ -115,7 +115,14 @@ reference 和 skeleton 公平对比时使用相同 GPU 数量、训练超参和 
 5. 在固定 student rollout 上计算 `teacher_reference_vs_student`、`teacher_skeleton_vs_student` 分类 KL；
 6. 从 student 轨迹 KL 中选择全局 Top-KL token，让两种 teacher 分别 greedy 续写并生成三列 HTML。
 
-两套 KL 使用相同模型权重，但 target trajectory 和 baseline 不同，结果文件不会相互覆盖。teacher prompt 始终来自当前代码：reference teacher 使用当前 reference prompt，skeleton teacher 使用当前 style-neutral semantic skeleton prompt。
+两套 KL 使用相同模型权重，但 target trajectory 和 baseline 不同，结果文件不会相互覆盖。teacher prompt 由 `--experiment-profile` 明确选择：
+
+| profile | 用途 | skeleton 是否看见答案 | KL target token source |
+| --- | --- | --- | --- |
+| `legacy-20260629` | 复刻归档实验 | 是，单独的 `Final answer:` 行 | `full_generation` 文本重新 tokenize |
+| `current-style-neutral` | 当前 prompt 实验 | 否 | 优先复用 rollout 原始 token IDs |
+
+每次运行都会在 `$OUT/experiment_config.json` 保存 profile、Git commit、输入文件 SHA-256、GPU IDs、`n` 和所有主要 sampling/token 参数。
 
 ### Rollout 长度参数（重要）
 
@@ -127,30 +134,60 @@ reference 和 skeleton 公平对比时使用相同 GPU 数量、训练超参和 
 | `--teacher-max-new-tokens` | 控制 `teacher_base`、`teacher_reference`、`teacher_skeleton` | `16384` |
 | `--max-model-len` | prompt + completion 的总上下文 | `20000` |
 
+一键 runner 的 `--val-n` 默认值现在是 `4`。`legacy-20260629` 在没有显式覆盖时还会采用 `sample-size=128` 和 student/teacher `max-new-tokens=16384`，并强制要求传入归档 `sample_indices.json`。
+
 兼容旧命令的 `--max-new-tokens N` 仍然保留，它会同时设置 student 和三路 teacher；如果同时传入分组参数，则 `--student-max-new-tokens` 或 `--teacher-max-new-tokens` 优先。正式对比建议显式写出两个分组参数，避免把 context length 误当成 completion length。
 
-### 服务器示例：Qwen3-1.7B、GPU 4 和 5
+### 复刻 2026-06-29 归档实验：Qwen3-1.7B、GPU 4/5/6/7
 
 ```bash
 cd /home/ruizzhao/OPSD-main
 
-KL_OUT=/home/ruizzhao/OPSD-main/outputs/opsd_quick/student_teacher_dual_kl_$(date +%Y%m%d_%H%M%S)
+LEGACY_DIR=/home/ruizzhao/OPSD-main/outputs/opsd_quick/qwen31b_skeleton_ablation_reuse_20260629_112333
+KL_OUT=/home/ruizzhao/OPSD-main/outputs/opsd_quick/legacy_20260629_reproduction_$(date +%Y%m%d_%H%M%S)
 
 bash scripts/run_student_teacher_category_kl.sh \
   --base-model /home/ruizzhao/OPSD-main/models/Qwen3-1.7B \
-  --skeleton-file /home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl \
+  --experiment-profile legacy-20260629 \
+  --sample-indices-file "$LEGACY_DIR/sample_indices.json" \
+  --skeleton-file "$LEGACY_DIR/skeletons.jsonl" \
   --out "$KL_OUT" \
   --student-tm off \
-  --student-max-new-tokens 1024 \
+  --student-max-new-tokens 16384 \
   --teacher-max-new-tokens 16384 \
-  --sample-size 10 \
-  --gpu-ids "4 5" \
+  --sample-size 128 \
+  --val-n 4 \
+  --temperature 1.1 \
+  --top-p 0.95 \
+  --top-k 20 \
+  --gpu-memory-utilization 0.9 \
+  --gpu-ids "4 5 6 7" \
   --max-model-len 20000 \
+  --trajectory-sample-index 0 \
+  --probe-tokens 0 \
   --hf-device-map cuda \
   --teacher-continuation-top-n 10 \
   --teacher-continuation-max-new-tokens 200 \
   --seed 0
 ```
+
+归档结果中 teacher 三路存在恰好 16384 tokens 且 `finish_reason=length` 的记录，因此这里以实际产物为准显式使用 16384；旧提交脚本中的 1024 默认值和文档中的 8194 示例都不能解释该产物。
+
+### 当前 style-neutral prompt 的受控对照
+
+为只比较 rollout performance 的 prompt 差异，复用完全相同的旧 manifest、旧 skeleton 和其他参数，将上面命令中的 profile 改为：
+
+```bash
+--experiment-profile current-style-neutral
+```
+
+如果 KL 也要只隔离 prompt、保持旧文本重分词口径，再增加：
+
+```bash
+--target-token-source target_tail_text
+```
+
+不显式覆盖时，current profile 的 KL 使用原始 rollout token IDs，legacy profile 使用旧文本重分词口径。两次运行的 `$OUT/experiment_config.json` 会明确记录该差异。
 
 如果测试 LoRA/PEFT checkpoint，在命令中增加：
 
@@ -180,15 +217,20 @@ cd /home/ruizzhao/OPSD-main
 
 KL_OUT=/home/ruizzhao/OPSD-main/outputs/opsd_quick/student_teacher_dual_kl_only_$(date +%Y%m%d_%H%M%S)
 
+LEGACY_DIR=/home/ruizzhao/OPSD-main/outputs/opsd_quick/qwen31b_skeleton_ablation_reuse_20260629_112333
+
 bash scripts/run_student_teacher_category_kl.sh \
   --base-model /home/ruizzhao/OPSD-main/models/Qwen3-1.7B \
-  --skeleton-file /home/ruizzhao/OPSD-main/outputs/opsd_skeletons/qwen31b_full_train_20260703_130644/skeletons.jsonl \
+  --experiment-profile legacy-20260629 \
+  --sample-indices-file "$LEGACY_DIR/sample_indices.json" \
+  --skeleton-file "$LEGACY_DIR/skeletons.jsonl" \
   --out "$KL_OUT" \
   --student-tm off \
-  --student-max-new-tokens 1024 \
+  --student-max-new-tokens 16384 \
   --teacher-max-new-tokens 16384 \
-  --sample-size 10 \
-  --gpu-ids "4 5" \
+  --sample-size 128 \
+  --val-n 4 \
+  --gpu-ids "4 5 6 7" \
   --max-model-len 20000 \
   --hf-device-map cuda \
   --seed 0 \
@@ -262,7 +304,7 @@ $KL_OUT/student_teacher_category_kl_summary.json
 - `teacher_reference_vs_student`
 - `teacher_skeleton_vs_student`
 
-这套记录保留 completion token IDs，并用于后续 Top-KL teacher 续写。分类字段包括 `mean_style_kl`、`mean_math_kl`、`mean_other_kl` 及对应 KL share。
+rollout 始终保留 completion token IDs；KL 记录的 `target_token_source` 则由 profile/显式参数决定，并用于后续 Top-KL teacher 续写的位置对齐。分类字段包括 `mean_style_kl`、`mean_math_kl`、`mean_other_kl` 及对应 KL share。
 
 ## 5. 从已有双 KL 结果单独运行或恢复 teacher 续写
 
@@ -286,6 +328,7 @@ bash scripts/run_teacher_spike_continuations.sh \
   --out "$KL_OUT" \
   --student-rollout-file "$KL_OUT/rollouts.jsonl" \
   --skeleton-file "$KL_OUT/skeletons.jsonl" \
+  --teacher-prompt-profile legacy-20260629 \
   --gpu-ids "4 5" \
   --top-n 10 \
   --max-new-tokens 200 \

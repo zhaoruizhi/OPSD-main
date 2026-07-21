@@ -12,6 +12,7 @@ TOP_N="${TOP_N:-10}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-20}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-20000}"
 HF_DEVICE_MAP="${HF_DEVICE_MAP:-cuda}"
+TEACHER_PROMPT_PROFILE="${TEACHER_PROMPT_PROFILE:-current-style-neutral}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +38,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skeleton-file)
       SKELETON_FILE="$2"
+      shift 2
+      ;;
+    --teacher-prompt-profile)
+      TEACHER_PROMPT_PROFILE="$2"
       shift 2
       ;;
     --gpus|--gpu-ids)
@@ -107,6 +112,7 @@ echo "Base model: $BASE_MODEL"
 echo "Checkpoint: ${CHECKPOINT_DIR:-none}"
 echo "GPU ids: ${GPU_ID_ARRAY[*]} | Num workers: $NUM_SHARDS"
 echo "Global Top N: $TOP_N | Greedy continuation tokens: $MAX_NEW_TOKENS"
+echo "Teacher prompt profile: $TEACHER_PROMPT_PROFILE"
 
 echo
 echo "== Phase C0: validate/rebuild complete KL aggregate =="
@@ -154,6 +160,7 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --kl-file "$KL_REMERGED_FILE" \
     --student-rollout-file "$STUDENT_ROLLOUT_FILE" \
     --skeleton-file "$SKELETON_FILE" \
+    --teacher-prompt-profile "$TEACHER_PROMPT_PROFILE" \
     --top-n "$TOP_N" \
     --max-new-tokens "$MAX_NEW_TOKENS" \
     --max-context-tokens "$MAX_MODEL_LEN" \

@@ -7,9 +7,12 @@ DATASET="${DATASET:-siyanzhao/Openthoughts_math_30k_opsd}"
 SPLIT="${SPLIT:-train}"
 OUT="${OUT:-/data1/opsd_quick/qwen31b_student_teacher_category_kl_$(date +%Y%m%d_%H%M%S)}"
 SKELETON_FILE="${SKELETON_FILE:-}"
-SAMPLE_INDICES_FILE=""
+SAMPLE_INDICES_FILE="${SAMPLE_INDICES_FILE:-}"
 SAMPLE_SIZE=10
-VAL_N=1
+SAMPLE_SIZE_EXPLICIT=0
+VAL_N="${VAL_N:-4}"
+EXPERIMENT_PROFILE="${EXPERIMENT_PROFILE:-current-style-neutral}"
+TARGET_TOKEN_SOURCE="${TARGET_TOKEN_SOURCE:-}"
 STUDENT_TM="${STUDENT_TM:-off}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-}"
 STUDENT_MAX_NEW_TOKENS="${STUDENT_MAX_NEW_TOKENS:-}"
@@ -60,6 +63,19 @@ while [[ $# -gt 0 ]]; do
       ;;
     --sample-size)
       SAMPLE_SIZE="$2"
+      SAMPLE_SIZE_EXPLICIT=1
+      shift 2
+      ;;
+    --val-n)
+      VAL_N="$2"
+      shift 2
+      ;;
+    --experiment-profile)
+      EXPERIMENT_PROFILE="$2"
+      shift 2
+      ;;
+    --target-token-source)
+      TARGET_TOKEN_SOURCE="$2"
       shift 2
       ;;
     --student-tm)
@@ -137,9 +153,42 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+case "$EXPERIMENT_PROFILE" in
+  current-style-neutral)
+    TARGET_TOKEN_SOURCE="${TARGET_TOKEN_SOURCE:-auto}"
+    ;;
+  legacy-20260629)
+    TARGET_TOKEN_SOURCE="${TARGET_TOKEN_SOURCE:-target_tail_text}"
+    if [[ "$SAMPLE_SIZE_EXPLICIT" -eq 0 ]]; then
+      SAMPLE_SIZE=128
+    fi
+    if [[ "$STUDENT_TM" != "off" ]]; then
+      echo "legacy-20260629 requires --student-tm off." >&2
+      exit 2
+    fi
+    ;;
+  *)
+    echo "--experiment-profile must be 'current-style-neutral' or 'legacy-20260629'." >&2
+    exit 2
+    ;;
+esac
+
+case "$TARGET_TOKEN_SOURCE" in
+  auto|target_tail_text)
+    ;;
+  *)
+    echo "--target-token-source must be 'auto' or 'target_tail_text'." >&2
+    exit 2
+    ;;
+esac
+
 case "$STUDENT_TM" in
   off)
-    DEFAULT_STUDENT_MAX_NEW_TOKENS="1024"
+    if [[ "$EXPERIMENT_PROFILE" == "legacy-20260629" ]]; then
+      DEFAULT_STUDENT_MAX_NEW_TOKENS="16384"
+    else
+      DEFAULT_STUDENT_MAX_NEW_TOKENS="1024"
+    fi
     STUDENT_THINKING_ARGS=()
     ;;
   on)
@@ -171,9 +220,23 @@ validate_positive_integer() {
 validate_positive_integer "student max new tokens" "$STUDENT_MAX_NEW_TOKENS"
 validate_positive_integer "teacher max new tokens" "$TEACHER_MAX_NEW_TOKENS"
 validate_positive_integer "max model length" "$MAX_MODEL_LEN"
+validate_positive_integer "sample size" "$SAMPLE_SIZE"
+validate_positive_integer "val n" "$VAL_N"
 
 if [[ -z "$SKELETON_FILE" ]]; then
   echo "--skeleton-file is required so teacher_skeleton prompts can be reconstructed." >&2
+  exit 2
+fi
+if [[ "$EXPERIMENT_PROFILE" == "legacy-20260629" && -z "$SAMPLE_INDICES_FILE" ]]; then
+  echo "legacy-20260629 requires --sample-indices-file from the archived experiment." >&2
+  exit 2
+fi
+if [[ ! -f "$SKELETON_FILE" ]]; then
+  echo "Skeleton file does not exist: $SKELETON_FILE" >&2
+  exit 2
+fi
+if [[ -n "$SAMPLE_INDICES_FILE" && ! -f "$SAMPLE_INDICES_FILE" ]]; then
+  echo "Sample indices file does not exist: $SAMPLE_INDICES_FILE" >&2
   exit 2
 fi
 
@@ -194,6 +257,7 @@ echo "Output directory: $OUT"
 echo "Base model: $BASE_MODEL"
 echo "Checkpoint: ${CHECKPOINT_DIR:-none}"
 echo "Dataset: $DATASET:$SPLIT"
+echo "Experiment profile: $EXPERIMENT_PROFILE | KL target token source: $TARGET_TOKEN_SOURCE"
 echo "Student TM: $STUDENT_TM | Student max new tokens: $STUDENT_MAX_NEW_TOKENS"
 echo "Teacher max new tokens: $TEACHER_MAX_NEW_TOKENS"
 echo "Model context length: $MAX_MODEL_LEN"
@@ -214,6 +278,38 @@ else
 fi
 cp "$SKELETON_FILE" "$OUT/skeletons.jsonl"
 
+if [[ "$SKIP_TEACHER_CONTINUATIONS" -eq 0 ]]; then
+  TEACHER_CONTINUATIONS_STATE="enabled"
+else
+  TEACHER_CONTINUATIONS_STATE="skipped"
+fi
+python eval/write_experiment_config.py \
+  --output-file "$OUT/experiment_config.json" \
+  --repo-root . \
+  --experiment-profile "$EXPERIMENT_PROFILE" \
+  --base-model "$BASE_MODEL" \
+  --checkpoint-dir "$CHECKPOINT_DIR" \
+  --dataset "$DATASET" \
+  --split "$SPLIT" \
+  --sample-indices-file "$OUT/sample_indices.json" \
+  --skeleton-file "$OUT/skeletons.jsonl" \
+  --sample-size "$SAMPLE_SIZE" \
+  --val-n "$VAL_N" \
+  --student-tm "$STUDENT_TM" \
+  --student-max-new-tokens "$STUDENT_MAX_NEW_TOKENS" \
+  --teacher-max-new-tokens "$TEACHER_MAX_NEW_TOKENS" \
+  --max-model-len "$MAX_MODEL_LEN" \
+  --temperature "$TEMPERATURE" \
+  --top-p "$TOP_P" \
+  --top-k "$TOP_K" \
+  --seed "$SEED" \
+  --gpu-ids "$GPU_IDS" \
+  --trajectory-sample-index "$TRAJECTORY_SAMPLE_INDEX" \
+  --probe-tokens "$PROBE_TOKENS" \
+  --target-token-source "$TARGET_TOKEN_SOURCE" \
+  --hf-device-map "$HF_DEVICE_MAP" \
+  --teacher-continuations "$TEACHER_CONTINUATIONS_STATE"
+
 echo
 echo "== Phase 1: four-condition rollouts =="
 pids=()
@@ -228,6 +324,7 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --sample-size "$SAMPLE_SIZE" \
     --sample-indices-file "$OUT/sample_indices.json" \
     --skeleton-file "$OUT/skeletons.jsonl" \
+    --teacher-prompt-profile "$EXPERIMENT_PROFILE" \
     --seed "$SEED" \
     --shard-id "$shard_id" \
     --num-shards "$NUM_SHARDS" \
@@ -271,6 +368,7 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     "${MODEL_ARGS[@]}" \
     --rollout-file "$OUT/rollouts.jsonl" \
     --skeleton-file "$OUT/skeletons.jsonl" \
+    --teacher-prompt-profile "$EXPERIMENT_PROFILE" \
     --trajectory-condition teacher_base \
     --baseline-condition teacher_base \
     --teacher-condition teacher_reference \
@@ -278,6 +376,7 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --trajectory-sample-index "$TRAJECTORY_SAMPLE_INDEX" \
     --logit-size 0 \
     --probe-tokens "$PROBE_TOKENS" \
+    --target-token-source "$TARGET_TOKEN_SOURCE" \
     --seed "$SEED" \
     --top-k "$TOP_K" \
     --max-context-tokens "$MAX_MODEL_LEN" \
@@ -328,6 +427,7 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     "${MODEL_ARGS[@]}" \
     --rollout-file "$OUT/rollouts.jsonl" \
     --skeleton-file "$OUT/skeletons.jsonl" \
+    --teacher-prompt-profile "$EXPERIMENT_PROFILE" \
     --trajectory-condition student \
     --baseline-condition student \
     --teacher-condition teacher_reference \
@@ -335,6 +435,7 @@ for gpu_index in "${!GPU_ID_ARRAY[@]}"; do
     --trajectory-sample-index "$TRAJECTORY_SAMPLE_INDEX" \
     --logit-size 0 \
     --probe-tokens "$PROBE_TOKENS" \
+    --target-token-source "$TARGET_TOKEN_SOURCE" \
     --seed "$SEED" \
     --top-k "$TOP_K" \
     --max-context-tokens "$MAX_MODEL_LEN" \
@@ -372,6 +473,7 @@ if [[ "$SKIP_TEACHER_CONTINUATIONS" -eq 0 ]]; then
     --out "$OUT" \
     --kl-file "$OUT/student_teacher_category_kl.jsonl" \
     --student-rollout-file "$OUT/rollouts.jsonl" \
+    --teacher-prompt-profile "$EXPERIMENT_PROFILE" \
     --gpu-ids "$GPU_IDS" \
     --top-n "$TEACHER_CONTINUATION_TOP_N" \
     --max-new-tokens "$TEACHER_CONTINUATION_MAX_NEW_TOKENS" \
@@ -382,6 +484,7 @@ fi
 echo
 echo "Dual-KL semantic-skeleton ablation complete."
 echo "Sample manifest:       $OUT/sample_indices.json"
+echo "Experiment config:      $OUT/experiment_config.json"
 echo "Four-condition rollout: $OUT/rollouts.jsonl"
 echo "Performance/token length: $OUT/rollout_summary.json"
 echo "Teacher-base KL records: $OUT/logit_probe.jsonl"

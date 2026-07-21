@@ -10,6 +10,8 @@ from typing import Any
 
 try:
     from .quick_opsd_common import (
+        DEFAULT_TEACHER_PROMPT_PROFILE,
+        TEACHER_PROMPT_PROFILES,
         build_reference_user_message,
         build_semantic_skeleton_user_message,
         build_student_user_message,
@@ -30,6 +32,8 @@ try:
     )
 except ImportError:  # pragma: no cover - used when run as python eval/script.py
     from quick_opsd_common import (
+        DEFAULT_TEACHER_PROMPT_PROFILE,
+        TEACHER_PROMPT_PROFILES,
         build_reference_user_message,
         build_semantic_skeleton_user_message,
         build_student_user_message,
@@ -139,6 +143,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-size", type=int, default=256)
     parser.add_argument("--sample-indices-file", type=str)
     parser.add_argument("--skeleton-file", type=str)
+    parser.add_argument(
+        "--teacher-prompt-profile",
+        choices=TEACHER_PROMPT_PROFILES,
+        default=DEFAULT_TEACHER_PROMPT_PROFILE,
+        help="Reference/skeleton teacher prompt template to use.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--shard-id", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
@@ -271,6 +281,7 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
                 skeleton=skeletons.get(int(original_index)),
                 ground_truth=ground_truth,
                 problem_id=int(original_index),
+                teacher_prompt_profile=args.teacher_prompt_profile,
             )
             prompt_text = render_chat_prompt(tokenizer, user_message, enable_thinking=spec.enable_thinking)
             prompts.append(prompt_text)
@@ -283,6 +294,7 @@ def run_rollouts(args: argparse.Namespace) -> list[dict[str, Any]]:
                     "ground_truth": ground_truth,
                     "source": example.get("source"),
                     "generated_token_count": example.get("generated_token_count"),
+                    "teacher_prompt_profile": args.teacher_prompt_profile,
                 }
             )
 
@@ -337,17 +349,28 @@ def user_message_for_rollout(
     skeleton: dict[str, Any] | None,
     ground_truth: str | None,
     problem_id: int,
+    teacher_prompt_profile: str = DEFAULT_TEACHER_PROMPT_PROFILE,
 ) -> str:
     if spec.prompt_kind == "student":
         return build_student_user_message(problem)
     if spec.prompt_kind == "base":
         return build_student_user_message(problem)
     if spec.prompt_kind == "reference":
-        return build_reference_user_message(problem, solution, ground_truth=ground_truth)
+        return build_reference_user_message(
+            problem,
+            solution,
+            ground_truth=ground_truth,
+            teacher_prompt_profile=teacher_prompt_profile,
+        )
     if spec.prompt_kind == "skeleton":
         if skeleton is None:
             raise ValueError(f"missing semantic skeleton for problem_id={problem_id}")
-        return build_semantic_skeleton_user_message(problem, skeleton, ground_truth=ground_truth)
+        return build_semantic_skeleton_user_message(
+            problem,
+            skeleton,
+            ground_truth=ground_truth,
+            teacher_prompt_profile=teacher_prompt_profile,
+        )
     raise ValueError(f"Unknown prompt kind: {spec.prompt_kind}")
 
 

@@ -43,6 +43,54 @@ class QuickOpsdScriptShapeTests(unittest.TestCase):
         self.assertEqual(args.checkpoint_dir, "/runs/checkpoint-100")
         self.assertTrue(args.student_enable_thinking)
 
+    def test_rollout_parse_args_accepts_legacy_teacher_prompt_profile(self):
+        from eval.quick_rollout_openthoughts import parse_args
+
+        argv = [
+            "quick_rollout_openthoughts.py",
+            "--summary-file",
+            "summary.json",
+            "--output-file",
+            "rollouts.jsonl",
+            "--teacher-prompt-profile",
+            "legacy-20260629",
+        ]
+
+        with patch.object(sys, "argv", argv):
+            args = parse_args()
+
+        self.assertEqual(args.teacher_prompt_profile, "legacy-20260629")
+
+    def test_rollout_user_message_uses_selected_legacy_profile(self):
+        from eval.quick_rollout_openthoughts import (
+            RolloutConditionSpec,
+            user_message_for_rollout,
+        )
+
+        prompt = user_message_for_rollout(
+            spec=RolloutConditionSpec(
+                "teacher_skeleton",
+                enable_thinking=True,
+                prompt_kind="skeleton",
+            ),
+            problem="Compute 2+2.",
+            solution="2+2=4.",
+            skeleton={
+                "final_answer": "4",
+                "key_objects": [],
+                "subgoals": [],
+                "critical_intermediates": [],
+                "theorem_tags": [],
+                "checks": [],
+            },
+            ground_truth="4",
+            problem_id=1,
+            teacher_prompt_profile="legacy-20260629",
+        )
+
+        self.assertIn("Final answer: 4", prompt)
+        self.assertIn('"checks": []', prompt)
+
     def test_rollout_parse_args_supports_condition_specific_generation_limits(self):
         from eval.quick_rollout_openthoughts import parse_args
 

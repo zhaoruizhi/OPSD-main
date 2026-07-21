@@ -257,6 +257,62 @@ class QuickLogitProbeTests(unittest.TestCase):
         self.assertEqual(token_ids, [120, 121])
         self.assertEqual(source, "completion_token_ids")
 
+    def test_target_token_ids_can_force_legacy_text_retokenization(self):
+        class FakeTokenizer:
+            def __call__(self, text, add_special_tokens=False):
+                return {"input_ids": [ord(char) for char in text]}
+
+            def decode(self, token_ids, skip_special_tokens=False):
+                return "".join(chr(token_id) for token_id in token_ids)
+
+        text, token_ids, source = target_token_ids_for_case(
+            FakeTokenizer(),
+            {
+                "target_tail_text": "abcd",
+                "completion_token_ids": [120, 121, 122],
+            },
+            probe_tokens=2,
+            target_token_source="target_tail_text",
+        )
+
+        self.assertEqual(text, "ab")
+        self.assertEqual(token_ids, [97, 98])
+        self.assertEqual(source, "target_tail_text")
+
+    def test_context_prompt_reconstruction_uses_legacy_teacher_profile(self):
+        captured_messages = []
+
+        class FakeTokenizer:
+            def __call__(self, text, add_special_tokens=False):
+                return {"input_ids": [1, 2, 3]}
+
+            def apply_chat_template(
+                self,
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            ):
+                captured_messages.extend(messages)
+                return messages[0]["content"]
+
+        context_prompt_ids_for_condition(
+            tokenizer=FakeTokenizer(),
+            case={
+                "problem_id": 1,
+                "problem": "Compute 2+2.",
+                "solution": "2+2=4.",
+                "ground_truth": "4",
+            },
+            condition="teacher_reference",
+            skeletons={},
+            teacher_prompt_profile="legacy-20260629",
+        )
+
+        prompt = captured_messages[0]["content"]
+        self.assertGreater(prompt.index("Reference Solution End"), 0)
+        self.assertGreater(prompt.index("Final answer: 4"), prompt.index("Reference Solution End"))
+
     def test_context_prompt_ids_prefers_stored_prompt_ids(self):
         class FakeTokenizer:
             def __call__(self, text, add_special_tokens=False):

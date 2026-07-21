@@ -14,6 +14,8 @@ from typing import Any
 
 try:
     from .quick_opsd_common import (
+        DEFAULT_TEACHER_PROMPT_PROFILE,
+        TEACHER_PROMPT_PROFILES,
         build_heuristic_diagnostic,
         build_intervention_user_message,
         build_opsd_oracle_user_message,
@@ -33,6 +35,8 @@ try:
     )
 except ImportError:  # pragma: no cover
     from quick_opsd_common import (
+        DEFAULT_TEACHER_PROMPT_PROFILE,
+        TEACHER_PROMPT_PROFILES,
         build_heuristic_diagnostic,
         build_intervention_user_message,
         build_opsd_oracle_user_message,
@@ -55,6 +59,7 @@ except ImportError:  # pragma: no cover
 LOGPROB_BACKEND = "hf_causal_lm"
 TARGET_TOKEN_SOURCE_TEXT = "target_tail_text"
 TARGET_TOKEN_SOURCE_TOKEN_IDS = "completion_token_ids"
+TARGET_TOKEN_SOURCE_AUTO = "auto"
 PROMPT_TOKEN_SOURCE_TEXT = "reconstructed_prompt_text"
 PROMPT_TOKEN_SOURCE_TOKEN_IDS = "prompt_token_ids"
 TARGET_TOKEN_SOURCE = TARGET_TOKEN_SOURCE_TEXT
@@ -94,6 +99,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rollout-file", type=str)
     parser.add_argument("--prefix-file", type=str)
     parser.add_argument("--skeleton-file", type=str)
+    parser.add_argument(
+        "--teacher-prompt-profile",
+        choices=TEACHER_PROMPT_PROFILES,
+        default=DEFAULT_TEACHER_PROMPT_PROFILE,
+        help="Reference/skeleton teacher prompt template used when reconstructing contexts.",
+    )
     parser.add_argument("--output-file", type=str)
     parser.add_argument("--summary-file", type=str, required=True)
     parser.add_argument("--summarize-only", action="store_true")
@@ -121,6 +132,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--probe-tokens", type=int, default=0)
+    parser.add_argument(
+        "--target-token-source",
+        choices=[TARGET_TOKEN_SOURCE_AUTO, TARGET_TOKEN_SOURCE_TEXT],
+        default=TARGET_TOKEN_SOURCE_AUTO,
+        help=(
+            "Use original rollout completion token IDs when available ('auto'), or reproduce the "
+            "legacy probe by re-tokenizing target_tail_text."
+        ),
+    )
     parser.add_argument(
         "--trajectory-sample-index",
         type=int,
@@ -371,13 +391,17 @@ def target_token_ids_for_case(
     tokenizer: Any,
     case: dict[str, Any],
     probe_tokens: int,
+    target_token_source: str = TARGET_TOKEN_SOURCE_AUTO,
 ) -> tuple[str, list[int], str]:
-    token_ids = _coerce_token_ids(case.get("completion_token_ids"))
-    if token_ids:
-        if probe_tokens > 0:
-            token_ids = token_ids[:probe_tokens]
-        target_text = tokenizer.decode(token_ids, skip_special_tokens=False)
-        return target_text, token_ids, TARGET_TOKEN_SOURCE_TOKEN_IDS
+    if target_token_source not in {TARGET_TOKEN_SOURCE_AUTO, TARGET_TOKEN_SOURCE_TEXT}:
+        raise ValueError(f"unknown target token source: {target_token_source}")
+    if target_token_source == TARGET_TOKEN_SOURCE_AUTO:
+        token_ids = _coerce_token_ids(case.get("completion_token_ids"))
+        if token_ids:
+            if probe_tokens > 0:
+                token_ids = token_ids[:probe_tokens]
+            target_text = tokenizer.decode(token_ids, skip_special_tokens=False)
+            return target_text, token_ids, TARGET_TOKEN_SOURCE_TOKEN_IDS
 
     target_text, token_ids = truncate_target_text(
         tokenizer,
@@ -393,6 +417,7 @@ def context_prompt_ids_for_condition(
     condition: str,
     skeletons: dict[int, dict[str, Any]],
     student_enable_thinking: bool = False,
+    teacher_prompt_profile: str = DEFAULT_TEACHER_PROMPT_PROFILE,
 ) -> tuple[list[int], str]:
     context_records = case.get("context_records")
     has_matching_context_record = isinstance(context_records, dict) and condition in context_records
@@ -411,6 +436,7 @@ def context_prompt_ids_for_condition(
         condition=condition,
         skeletons=skeletons,
         student_enable_thinking=student_enable_thinking,
+        teacher_prompt_profile=teacher_prompt_profile,
     )
     encoded = tokenizer(prompt_text, add_special_tokens=False)
     return _coerce_token_ids(encoded.get("input_ids")), PROMPT_TOKEN_SOURCE_TEXT
@@ -495,6 +521,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                 tokenizer,
                 case,
                 args.probe_tokens,
+                target_token_source=args.target_token_source,
             )
             if not target_ids:
                 continue
@@ -510,6 +537,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                         condition=condition,
                         skeletons=skeletons,
                         student_enable_thinking=args.student_enable_thinking,
+                        teacher_prompt_profile=args.teacher_prompt_profile,
                     )
                     condition_log_probs[condition] = compute_target_log_probs_hf(
                         model=model,
@@ -555,6 +583,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                     tokenizer,
                     case,
                     args.probe_tokens,
+                    target_token_source=args.target_token_source,
                 )
                 if not target_ids:
                     continue
@@ -565,6 +594,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
                     condition=condition,
                     skeletons=skeletons,
                     student_enable_thinking=args.student_enable_thinking,
+                    teacher_prompt_profile=args.teacher_prompt_profile,
                 )
                 log_probs = compute_target_log_probs_hf(
                     model=model,
@@ -594,6 +624,7 @@ def run_logit_probe(args: argparse.Namespace) -> list[dict[str, Any]]:
             tokenizer,
             case,
             args.probe_tokens,
+            target_token_source=args.target_token_source,
         )
         if not target_ids:
             continue
@@ -642,6 +673,7 @@ def rollout_context_prompt(
     condition: str,
     skeletons: dict[int, dict[str, Any]],
     student_enable_thinking: bool = False,
+    teacher_prompt_profile: str = DEFAULT_TEACHER_PROMPT_PROFILE,
 ) -> str:
     context_records = case.get("context_records")
     record = context_records.get(condition, case) if isinstance(context_records, dict) else case
@@ -652,12 +684,22 @@ def rollout_context_prompt(
     if condition in {"student", "teacher_base"}:
         user_message = build_student_user_message(problem)
     elif condition == "teacher_reference":
-        user_message = build_reference_user_message(problem, solution, ground_truth=ground_truth)
+        user_message = build_reference_user_message(
+            problem,
+            solution,
+            ground_truth=ground_truth,
+            teacher_prompt_profile=teacher_prompt_profile,
+        )
     elif condition == "teacher_skeleton":
         problem_id = int(record.get("problem_id", case.get("problem_id")))
         if problem_id not in skeletons:
             raise ValueError("--skeleton-file is required when probing teacher_skeleton contexts")
-        user_message = build_semantic_skeleton_user_message(problem, skeletons[problem_id], ground_truth=ground_truth)
+        user_message = build_semantic_skeleton_user_message(
+            problem,
+            skeletons[problem_id],
+            ground_truth=ground_truth,
+            teacher_prompt_profile=teacher_prompt_profile,
+        )
     else:
         raise ValueError(f"Unknown rollout context condition: {condition}")
 

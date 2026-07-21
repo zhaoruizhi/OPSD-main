@@ -124,6 +124,71 @@ class QuickOpsdCommonTests(unittest.TestCase):
         )
         self.assertNotIn("reasoning behind each step — do not copy or paraphrase it", prompt)
 
+    def test_legacy_20260629_reference_prompt_matches_baseline_commit(self):
+        prompt = build_reference_user_message(
+            "Compute 2+2.",
+            "A reference solution says 2+2=4.",
+            ground_truth="4",
+            teacher_prompt_profile="legacy-20260629",
+        )
+
+        self.assertEqual(
+            prompt,
+            "Problem: Compute 2+2.\n\n"
+            "Here is a reference solution to this problem:\n"
+            "=== Reference Solution Begin ===\n"
+            "A reference solution says 2+2=4.\n"
+            "=== Reference Solution End ===\n\n"
+            "Final answer: 4\n\n\n"
+            "After reading the reference solution above, make sure you truly understand "
+            "the reasoning behind each step - do not copy or paraphrase it. Now, using your "
+            "own words and independent reasoning, derive the same final answer to the problem above. "
+            "Think step by step, explore different approaches, and don't be afraid to backtrack "
+            "or reconsider if something doesn't work out:\n\n"
+            "Please reason step by step, and put your final answer within \\boxed{}.",
+        )
+
+    def test_legacy_20260629_skeleton_prompt_matches_baseline_commit(self):
+        prompt = build_semantic_skeleton_user_message(
+            "Compute 2+2.",
+            {
+                "final_answer": "wrong fallback",
+                "key_objects": [],
+                "subgoals": ["establish the sum"],
+                "critical_intermediates": ["2+2=4"],
+                "theorem_tags": [],
+                "checks": ["box the answer"],
+            },
+            ground_truth="4",
+            teacher_prompt_profile="legacy-20260629",
+        )
+
+        self.assertEqual(
+            prompt,
+            "Problem: Compute 2+2.\n\n"
+            "Here is a style-neutral semantic skeleton extracted from a reference solution:\n"
+            "=== Semantic Skeleton Begin ===\n"
+            "{\n"
+            '  "checks": [\n'
+            '    "box the answer"\n'
+            "  ],\n"
+            '  "critical_intermediates": [\n'
+            '    "2+2=4"\n'
+            "  ],\n"
+            '  "key_objects": [],\n'
+            '  "subgoals": [\n'
+            '    "establish the sum"\n'
+            "  ],\n"
+            '  "theorem_tags": []\n'
+            "}\n"
+            "=== Semantic Skeleton End ===\n\n"
+            "Final answer: 4\n\n"
+            "Use the semantic skeleton above only as privileged mathematical guidance. "
+            "Do not copy or paraphrase any reference wording; reason in your own words, "
+            "fill in the missing derivation, and derive the same final answer independently.\n\n"
+            "Please reason step by step, and put your final answer within \\boxed{}.",
+        )
+
     def test_normalize_semantic_skeleton_accepts_legacy_aliases(self):
         skeleton = normalize_semantic_skeleton(
             {

@@ -59,7 +59,22 @@ class QuickOpsdRunScriptTests(unittest.TestCase):
         script = Path("scripts/run_student_teacher_category_kl.sh").read_text(encoding="utf-8")
 
         self.assertIn("SAMPLE_SIZE=10", script)
-        self.assertIn("VAL_N=1", script)
+        self.assertIn('VAL_N="${VAL_N:-4}"', script)
+        self.assertIn("--val-n)", script)
+        self.assertIn('validate_positive_integer "val n" "$VAL_N"', script)
+        self.assertIn("--experiment-profile)", script)
+        self.assertIn("--target-token-source)", script)
+        self.assertIn("legacy-20260629", script)
+        self.assertIn(
+            '--teacher-prompt-profile "$EXPERIMENT_PROFILE"',
+            script,
+        )
+        self.assertGreaterEqual(
+            script.count('--target-token-source "$TARGET_TOKEN_SOURCE"'),
+            2,
+        )
+        self.assertIn("write_experiment_config.py", script)
+        self.assertIn('"$OUT/experiment_config.json"', script)
         self.assertIn("STUDENT_TM=", script)
         self.assertIn('STUDENT_MAX_NEW_TOKENS="1024"', script)
         self.assertIn('STUDENT_MAX_NEW_TOKENS="16384"', script)
@@ -132,6 +147,11 @@ class QuickOpsdRunScriptTests(unittest.TestCase):
         self.assertIn('--sort-key rank', script)
         self.assertIn('student_teacher_category_kl_remerged.jsonl', script)
         self.assertIn('teacher_spike_continuations.html', script)
+        self.assertIn("--teacher-prompt-profile)", script)
+        self.assertIn(
+            '--teacher-prompt-profile "$TEACHER_PROMPT_PROFILE"',
+            script,
+        )
 
     def test_category_kl_runner_integrates_teacher_spike_phase(self):
         script = Path("scripts/run_student_teacher_category_kl.sh").read_text(encoding="utf-8")
